@@ -1,0 +1,43 @@
+SPDX-License-Identifier: GPL-2.0-only
+Subject: [PATCH] spi: airoha: never release NAND DMA buffers the controller may still use
+
+The BMT recovery can run during NAND probe. A DMA error after mapping must
+not unmap and free a buffer the controller has not finished with: stop with
+a panic, after which a reset recovers. Successful transfers are unchanged,
+and media status errors after a completed transfer still reach the BMT
+layer normally.
+
+--- a/drivers/spi/spi-airoha-snfi.c
++++ b/drivers/spi/spi-airoha-snfi.c
+@@ -18,6 +18,7 @@
+ #include <linux/mutex.h>
+ #include <linux/platform_device.h>
+ #include <linux/property.h>
++#include <linux/panic.h>
+ #include <linux/regmap.h>
+ #include <linux/sizes.h>
+ #include <linux/spi/spi.h>
+@@ -738,8 +739,9 @@
+ 	return len;
+ 
+ error_dma_unmap:
+-	dma_unmap_single(as_ctrl->dev, dma_addr, SPI_NAND_CACHE_SIZE,
+-			 DMA_FROM_DEVICE);
++	/* Completion is unproven. Keep the DMA mapping and backing buffer
++	 * alive until full reset; neither retry nor probe unwind may reuse it. */
++	panic("AN7581 NAND DMA error %d; reset required", err);
+ error_dma_mode_off:
+ 	airoha_snand_set_mode(as_ctrl, SPI_MODE_MANUAL);
+ 	return err;
+@@ -922,8 +924,9 @@
+ 	return len;
+ 
+ error_dma_unmap:
+-	dma_unmap_single(as_ctrl->dev, dma_addr, SPI_NAND_CACHE_SIZE,
+-			 DMA_TO_DEVICE);
++	/* Completion is unproven. Keep the DMA mapping and backing buffer
++	 * alive until full reset; neither retry nor probe unwind may reuse it. */
++	panic("AN7581 NAND DMA error %d; reset required", err);
+ error_dma_mode_off:
+ 	airoha_snand_set_mode(as_ctrl, SPI_MODE_MANUAL);
+ 	return err;

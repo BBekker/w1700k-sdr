@@ -1,0 +1,30 @@
+SPDX-License-Identifier: GPL-2.0-only
+Subject: [PATCH] mtd: nand: add the BMT replacement engine as a separate option
+
+CONFIG_AIROHA_SDR_BMT_WRITE links the transaction engine that replaces worn
+blocks and republishes the vendor tables. Without it the layer translates
+only.
+
+--- a/drivers/mtd/nand/Kconfig
++++ b/drivers/mtd/nand/Kconfig
+@@ -86,3 +86,12 @@
+ endmenu
+ 
+ endmenu
++
++config AIROHA_SDR_BMT_WRITE
++	bool "Persistent W1700K vendor BMT transactions"
++	depends on AIROHA_SDR_BMT
++	select CRYPTO_LIB_SHA256
++	default n
++	help
++	  Preserve complete block images and recover a fixed per-unit journal
++	  before UBI attachment. Protect ordinary MTD master aliases.
+--- a/drivers/mtd/nand/Makefile
++++ b/drivers/mtd/nand/Makefile
+@@ -16,3 +16,5 @@
+ nandcore-$(CONFIG_MTD_NAND_ECC_SW_HAMMING) += ecc-sw-hamming.o
+ nandcore-$(CONFIG_MTD_NAND_ECC_SW_BCH) += ecc-sw-bch.o
+ nandcore-$(CONFIG_MTD_NAND_ECC_MXIC) += ecc-mxic.o
++
++obj-$(CONFIG_AIROHA_SDR_BMT_WRITE) += airoha_bmt_write.o airoha_bmt_transaction.o

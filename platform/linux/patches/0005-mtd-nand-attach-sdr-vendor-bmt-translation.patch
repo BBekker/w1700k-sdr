@@ -1,0 +1,75 @@
+SPDX-License-Identifier: GPL-2.0-only
+Subject: [PATCH] mtd: nand: attach the vendor BMT translation layer
+
+Stock U-Boot addresses this SPI-NAND through the vendor's bad-block tables:
+a factory BBT shifts logical blocks past bad ones and a BMT substitutes worn
+blocks from a reserve pool. Add CONFIG_AIROHA_SDR_BMT, which builds the shared
+translation core (platform/bmt/airoha_bmt.c, copied in as sdr_bmt.c) and its
+MTD binding (sdr_bmt_layer.c), and attach it in spinand_probe, so every Linux
+partition and UBI lands on the same physical blocks stock would use.
+
+This is not OpenWrt's mtk_bmt, which stays disabled: that driver computes a
+different pool size, fails the vendor checksum, and then rewrites the table.
+The entry points are no-op stubs when the option is off.
+
+--- a/drivers/mtd/nand/Kconfig
++++ b/drivers/mtd/nand/Kconfig
+@@ -50,6 +50,16 @@
+ 	bool "Support MediaTek NAND Bad-block Management Table"
+ 	default n
+ 
++config AIROHA_SDR_BMT
++	bool "Airoha vendor BMT/BBT translation (SDR, read side)"
++	depends on MTD_SPI_NAND
++	default n
++	help
++	  Translate logical to physical NAND blocks through the vendor factory
++	  BBT shift and BMT substitution, matching stock. Read side only; it
++	  never writes the reserve pool. Not MTK_BMT: the pool is clamped and no
++	  table is ever rewritten.
++
+ config MTD_NAND_ECC_MXIC
+ 	bool "Macronix external hardware ECC engine"
+ 	depends on HAS_IOMEM
+--- a/drivers/mtd/nand/Makefile
++++ b/drivers/mtd/nand/Makefile
+@@ -4,6 +4,7 @@
+ obj-$(CONFIG_MTD_NAND_CORE) += nandcore.o
+ obj-$(CONFIG_MTD_NAND_ECC_MEDIATEK) += ecc-mtk.o
+ obj-$(CONFIG_MTD_NAND_MTK_BMT)	+= mtk_bmt.o mtk_bmt_v2.o mtk_bmt_bbt.o mtk_bmt_nmbm.o
++obj-$(CONFIG_AIROHA_SDR_BMT)	+= sdr_bmt.o sdr_bmt_layer.o
+ obj-$(CONFIG_MTD_NAND_ECC_REALTEK) += ecc-realtek.o
+ obj-$(CONFIG_SPI_QPIC_SNAND) += qpic_common.o
+ obj-$(CONFIG_MTD_NAND_QCOM) += qpic_common.o
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -1702,6 +1702,15 @@
+ 	kfree(spinand->scratchbuf);
+ }
+ 
++#if IS_ENABLED(CONFIG_AIROHA_SDR_BMT)
++/* platform/bmt translation layer, copied in and wired by platform/linux. */
++int sdr_bmt_attach(struct mtd_info *mtd);
++void sdr_bmt_detach(struct mtd_info *mtd);
++#else
++static inline int sdr_bmt_attach(struct mtd_info *mtd) { return 0; }
++static inline void sdr_bmt_detach(struct mtd_info *mtd) { }
++#endif
++
+ static int spinand_probe(struct spi_mem *mem)
+ {
+ 	struct spinand_device *spinand;
+@@ -1737,9 +1746,13 @@
+ 	if (ret)
+ 		goto err_spinand_cleanup;
+ 
++	/* Translate after registration: nothing reads the master until probe
++	 * returns, and partitions/UBI resolve the master ops at I/O time. */
++	sdr_bmt_attach(mtd);
+ 	return 0;
+ 
+ err_spinand_cleanup:
++	sdr_bmt_detach(mtd);
+ 	mtk_bmt_detach(mtd);
+ 	spinand_cleanup(spinand);
+ 

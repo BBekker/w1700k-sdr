@@ -1,0 +1,18 @@
+SPDX-License-Identifier: GPL-2.0-only
+Subject: [PATCH] mtd: call register_mtd_blktrans_devs only when it is built
+
+OpenWrt's patch calls register_mtd_blktrans_devs() from the MTD core
+unconditionally, which fails to link with MTD_BLKDEVS=n.
+
+--- a/drivers/mtd/mtdcore.c
++++ b/drivers/mtd/mtdcore.c
+@@ -1179,7 +1179,8 @@
+ 		register_reboot_notifier(&mtd->reboot_notifier);
+ 	}
+ 
+-	register_mtd_blktrans_devs();
++	if (IS_REACHABLE(CONFIG_MTD_BLKDEVS))
++		register_mtd_blktrans_devs();
+ 
+ out:
+ 	if (ret) {

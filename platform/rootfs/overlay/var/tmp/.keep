@@ -1,0 +1,1 @@
+Replaces Buildroot's /var/tmp symlink so /var/tmp gets its own bounded tmpfs.

@@ -1,0 +1,112 @@
+# W1700K SDR
+
+Turns a Gemtek W1700K Wi-Fi 7 router into a wideband software-defined receiver.
+The router's MediaTek MT7996 radio captures raw 14-bit IQ at up to 320 Msps,
+its Airoha AN7581 SoC streams it over 10 GbE, and a Linux host shows it as a
+live spectrum and waterfall in the browser, with the receiver's controls next
+to it.
+
+![The 2.4 GHz band live: spectrum and waterfall](docs/images/live-2g4.gif)
+
+*The whole 2.4 GHz band at 320 Msps, live: a 262,144-point FFT of every
+sample, 100 spectra a second (this recording runs at 50 frames a second).*
+
+The MT7996 runs only our own firmware: a ROM patch, WM and WA built from this
+repository, with no MediaTek code. It brings the radio up from a cold power-on
+by itself, from MediaTek's initialisation and calibration decoded register by
+register against a trace of MediaTek's own firmware, and takes its commands
+(LO, sample rate, capture, stream, gain, filter) from the host. See
+[docs/architecture.md](docs/architecture.md) and [docs/roadmap.md](docs/roadmap.md).
+
+## What it does
+
+| | |
+| --- | --- |
+| Sample rates | 40, 80, 160 or 320 Msps of 14-bit complex IQ on every band, independent of the LO and the filter |
+| Bands | 2.4 GHz (MT7976), 5 GHz and 6 GHz (two MT7977s); switching bands is a register write inside a running stream |
+| Tuning | No channels: the LO is any Hz a band's synthesizer locks at (unit A: 2.081–2.748, 4.647–7.509 and 4.707–7.576 GHz), on its grid of 2.98 Hz (2.4 GHz) or 11.9–14.3 Hz steps; retuned mid-stream (about 1 ms) |
+| Front end | AGC or manual LNA/baseband gain; analog filter 20–320 MHz |
+| Transport | the radio DMAs into a 1 GiB ring in SoC DRAM; the kernel sends every 8 KiB slice as one UDP datagram, zero-copy, on the 10 GbE port; at 320 Msps half the slices are packed to 28 bits per sample pair on the radio's own cores to fit the link (lossless, automatic) |
+| Host | `w1700k-spectrum`: 262,144-point FFT at 100 frames/s over every sample, browser UI, live controls; `sdr-recv` records the raw stream |
+
+## Screenshots
+
+![The web UI at 2.4 GHz](docs/images/ui-2g4.png)
+
+*2.4 GHz at 320 Msps: Wi-Fi frames and shorter hopping bursts. The Stream panel
+shows the link carrying 9.62 Gbit/s, half of the slices packed, and every
+sample transformed.*
+
+![The web UI at 5 GHz](docs/images/ui-5g.png)
+
+*An 80 MHz Wi-Fi channel at 5170–5250 MHz in a 320 MHz view.*
+
+![The same channel zoomed to 24 MHz](docs/images/ui-zoom.png)
+
+*The same channel's upper edge zoomed to 24 MHz, in 1.22 kHz bins.*
+
+## Repository
+
+| Path | |
+| --- | --- |
+| [`platform/`](platform/README.md) | What runs on the SoC: our U-Boot, Linux 6.18 with board patches, a read-only BusyBox root |
+| [`kernel/w1700k_sdr/`](kernel/w1700k_sdr/README.md) | The MT7996 driver (firmware download, the DMA ring, the 10 GbE export, the firmware's command mailbox) and its unit-side clients |
+| [`firmware/`](firmware/README.md) | Our MT7996 firmware: the ROM patch, the WM (radio bring-up and band set-up, streams, RF control) and the WA (packer) |
+| [`host/w1700k/`](host/w1700k/README.md) | Host control: firmware load, streaming, RF control as firmware commands; `w1700k serve` for the web UI |
+| [`host/spectrum/`](host/spectrum/README.md) | The spectrum/waterfall web server |
+| [`host/recv/`](host/recv/README.md) | `sdr-recv`, a raw-stream recorder and validator |
+| [`init/`](init/README.md) | Installation from stock, updates, recovery |
+| [`include/hw/`](include/hw/README.md) | Register reference: every known MT7996, A-die and AN7581 register, as C headers |
+| [`docs/`](docs/) | [Architecture](docs/architecture.md), [roadmap](docs/roadmap.md) |
+
+## Getting started
+
+You need a W1700K, a 3.3 V USB serial adapter on its console header, an
+Ethernet cable to its `lan3` port for installation, and a 10 GbE NIC on the
+host cabled to its `wan` port (10GBASE-T; an X710 with a copper SFP+ module
+works) for the IQ stream.
+
+```sh
+make                                   # everything, from public sources (~10 min plus downloads)
+make check                             # the test suite
+
+sudo init/host/link up IFACE           # 192.168.1.10/24 on the NIC cabled to lan3
+sudo init/host/tftp-forward enable IFACE
+init/install                           # back up the NAND, install, save the radio calibration
+
+sudo init/host/link up IFACE10G 10.77.0.10/24 9216    # the 10 GbE stream link
+host/spectrum/build/w1700k-spectrum --controller "host/bin/w1700k serve" --listen 0.0.0.0:8073
+```
+
+Then open `http://HOST:8073/` and press ▶. The first start loads the radio
+firmware and brings the radio up (about 2 s). Without the browser, the same
+operations are `host/bin/w1700k load|start|band|tune|gain|filter|stop|status`.
+
+Build requirements: a C/C++ compiler, make, git, Python 3.10+, the usual
+Buildroot prerequisites, clang, ld.lld, llvm-objcopy and llvm-readobj (RISC-V
+firmware), openssl (firmware container encryption), and
+`libfftw3-dev` and `zlib` for the spectrum server. No vendor firmware is
+downloaded or needed.
+
+## Read before use
+
+- **Our firmware is receive-only.** It runs none of MediaTek's transmit
+  calibrations and keeps the MAC's transmit path disabled; a gapless watch at
+  5250 MHz saw nothing during a load, where MediaTek's firmware transmits a
+  full-power burst. Still, do not cable an antenna port straight into a
+  sensitive instrument without an attenuator.
+- **Our ROM patch writes no eFuse.** MediaTek's ROM patches since 2025
+  permanently program one eFuse gate bit on their first run (also with
+  MediaTek's own driver); a unit that ever ran one has that bit set.
+- **Installation replaces the stock operating system.** `init/install` first
+  copies the whole NAND to the host; keep that copy. Restoring stock needs a
+  raw NAND writer, which this repository does not provide.
+- Accessing undocumented MT7996 or AN7581 addresses can hang the SoC or wedge
+  the radio until a power cycle. `include/hw/` marks every known hazard.
+
+## Licence
+
+MIT, except the Linux driver and kernel patches (GPL-2.0-only), U-Boot patches
+(GPL-2.0+), the driver's user-space header (GPL-2.0 WITH Linux-syscall-note)
+and files derived from MediaTek's mt76 driver (BSD-3-Clause-Clear). See
+[LICENSE](LICENSE).

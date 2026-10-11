@@ -1,0 +1,38 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] spi: airoha: never release NAND DMA buffers the controller may still use
+
+The BMT recovery can run during NAND probe. A DMA error after mapping must
+not unmap and free a buffer the controller has not finished with: stop, after
+which a reset recovers. Successful transfers are unchanged, and media status
+errors after a completed transfer still reach the BMT layer normally.
+
+--- a/drivers/spi/airoha_snfi_spi.c
++++ b/drivers/spi/airoha_snfi_spi.c
+@@ -20,6 +20,7 @@
+ #include <regmap.h>
+ #include <spi.h>
+ #include <spi-mem.h>
++#include <vsprintf.h>
+ 
+ /* SPI */
+ #define REG_SPI_CTRL_READ_MODE			0x0000
+@@ -747,7 +748,8 @@
+ 	return len;
+ 
+ error_dma_unmap:
+-	dma_unmap_single(dma_addr, SPI_NAND_CACHE_SIZE, DMA_FROM_DEVICE);
++	/* No completion proof: retain the DMA mapping/buffer until reset. */
++	panic("AN7581 NAND DMA error %d; reset required", err);
+ error_dma_mode_off:
+ 	airoha_snand_set_mode(priv, SPI_MODE_MANUAL);
+ 	return err;
+@@ -940,7 +942,8 @@
+ 	return len;
+ 
+ error_dma_unmap:
+-	dma_unmap_single(dma_addr, SPI_NAND_CACHE_SIZE, DMA_TO_DEVICE);
++	/* No completion proof: retain the DMA mapping/buffer until reset. */
++	panic("AN7581 NAND DMA error %d; reset required", err);
+ error_dma_mode_off:
+ 	airoha_snand_set_mode(priv, SPI_MODE_MANUAL);
+ 	return err;

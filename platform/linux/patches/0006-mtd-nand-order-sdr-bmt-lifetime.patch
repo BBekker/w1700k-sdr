@@ -1,0 +1,35 @@
+SPDX-License-Identifier: GPL-2.0-only
+Subject: [PATCH] mtd: install BMT translation before registration and release it on remove
+
+Partition registration calls block_isbad(), so translation must already be
+active. Fail the probe if it cannot attach rather than expose untranslated
+NAND. Keep the layer if unregistering fails, and detach it after success.
+
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -1730,13 +1730,14 @@
+ 		return ret;
+ 
+ 	mtk_bmt_attach(mtd);
++	ret = sdr_bmt_attach(mtd);
++	if (ret)
++		goto err_spinand_cleanup;
++
+ 	ret = mtd_device_register(mtd, NULL, 0);
+ 	if (ret)
+ 		goto err_spinand_cleanup;
+ 
+-	/* Translate after registration: nothing reads the master until probe
+-	 * returns, and partitions/UBI resolve the master ops at I/O time. */
+-	sdr_bmt_attach(mtd);
+ 	return 0;
+ 
+ err_spinand_cleanup:
+@@ -1760,6 +1761,7 @@
+ 	if (ret)
+ 		return ret;
+ 
++	sdr_bmt_detach(mtd);
+ 	mtk_bmt_detach(mtd);
+ 	spinand_cleanup(spinand);
+ 

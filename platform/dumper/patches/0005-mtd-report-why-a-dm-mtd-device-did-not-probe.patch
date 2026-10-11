@@ -1,0 +1,40 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] mtd: report why a DM MTD device did not probe
+
+uclass_foreach_dev_probe() stops at the first probe error and drops it.
+Walk the bound devices instead and report each probe error with the device
+name. The same devices are probed in the same order.
+
+--- a/drivers/mtd/mtd_uboot.c
++++ b/drivers/mtd/mtd_uboot.c
+@@ -7,6 +7,7 @@
+ #include <log.h>
+ #include <malloc.h>
+ #include <dm/device.h>
++#include <dm/device-internal.h>
+ #include <dm/uclass-internal.h>
+ #include <dm/uclass.h>
+ #include <linux/err.h>
+@@ -104,9 +105,20 @@
+ static void mtd_probe_uclass_mtd_devs(void)
+ {
+ 	struct udevice *dev;
++	struct uclass *uc;
++	int ret;
+ 
+-	uclass_foreach_dev_probe(UCLASS_MTD, dev)
+-		;
++	ret = uclass_get(UCLASS_MTD, &uc);
++	if (ret) {
++		printf("mtd: no MTD uclass: %d\n", ret);
++		return;
++	}
++
++	uclass_foreach_dev(dev, uc) {
++		ret = device_probe(dev);
++		if (ret)
++			printf("mtd: %s did not probe: %d\n", dev->name, ret);
++	}
+ }
+ #else
+ static void mtd_probe_uclass_mtd_devs(void) { }

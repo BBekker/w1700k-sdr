@@ -1,0 +1,32 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Bootstrap initramfs: mount the read-only SquashFS root under a RAM overlay and
+# switch to it. The installed system reads the root from UBI volume `rootfs`
+# (ubiblock0_3); the recovery image carries it here as /rootfs.squashfs.
+set -u
+bb=/bin/busybox
+fail()
+{
+	echo "W1700K_BOOTSTRAP_FAILED: $*" >&2
+	echo "<3>W1700K_BOOTSTRAP_FAILED: $*" > /dev/kmsg 2>/dev/null
+	exit 1
+}
+
+$bb mount -t devtmpfs devtmpfs /dev || fail "cannot mount devtmpfs"
+if $bb test -f /rootfs.squashfs; then
+	$bb mount -t squashfs -o loop,ro,noatime /rootfs.squashfs /lower ||
+		fail "cannot mount the RAM root"
+else
+	$bb test -b /dev/ubiblock0_3 || fail "UBI volume rootfs (ubiblock0_3) is absent"
+	$bb mount -t squashfs -o ro,noatime /dev/ubiblock0_3 /lower ||
+		fail "cannot mount the root from UBI"
+fi
+$bb mount -t tmpfs -o size=64M,mode=0755 tmpfs /ram || fail "cannot mount the overlay tmpfs"
+$bb mkdir -p /ram/upper /ram/work
+$bb mount -t overlay -o lowerdir=/lower,upperdir=/ram/upper,workdir=/ram/work \
+	overlay /newroot || fail "cannot mount the overlay root"
+$bb mkdir -p /newroot/.lower /newroot/.ram /newroot/proc /newroot/sys /newroot/dev
+$bb mount --move /lower /newroot/.lower || fail "cannot move the lower root"
+$bb mount --move /ram /newroot/.ram || fail "cannot move the overlay tmpfs"
+$bb mount --move /dev /newroot/dev || fail "cannot move devtmpfs"
+exec $bb switch_root /newroot /sbin/init

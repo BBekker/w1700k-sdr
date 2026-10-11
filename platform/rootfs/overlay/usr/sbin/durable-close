@@ -1,0 +1,13 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Unmount /durable and detach its UBI device.
+set -eu
+. /etc/w1700k/storage.conf
+lock=/run/durable.lock
+fail() { echo "durable-close: $*" >&2; exit 1; }
+[ -d "$lock" ] || fail "durable is not open"
+sync
+umount /durable || fail "/durable is busy"
+ubidetach -d "$DURABLE_UBI" || fail "cannot detach ubi$DURABLE_UBI"
+rmdir "$lock"
+echo "durable-close: /durable closed"

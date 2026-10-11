@@ -1,0 +1,52 @@
+SPDX-License-Identifier: GPL-2.0-only
+Subject: [PATCH] net: airoha: allow CPU Ethernet without the NPU driver
+
+QDMA Ethernet does not use the NPU. Keep the shared type available to the
+PPE code, return an error from the getter when the NPU driver is disabled,
+and let the configuration leave the offload-only driver out.
+
+--- a/drivers/net/ethernet/airoha/Kconfig
++++ b/drivers/net/ethernet/airoha/Kconfig
+@@ -18,7 +18,6 @@
+ config NET_AIROHA
+ 	tristate "Airoha SoC Gigabit Ethernet support"
+ 	depends on NET_DSA || !NET_DSA
+-	select NET_AIROHA_NPU
+ 	select PAGE_POOL
+ 	select PHYLINK
+ 	help
+--- a/include/linux/soc/airoha/airoha_offload.h
++++ b/include/linux/soc/airoha/airoha_offload.h
+@@ -6,6 +6,7 @@
+ #ifndef AIROHA_OFFLOAD_H
+ #define AIROHA_OFFLOAD_H
+ 
++#include <linux/err.h>
+ #include <linux/skbuff.h>
+ #include <linux/spinlock.h>
+ #include <linux/workqueue.h>
+@@ -164,7 +165,6 @@
+ };
+ 
+ struct airoha_npu {
+-#if (IS_BUILTIN(CONFIG_NET_AIROHA_NPU) || IS_MODULE(CONFIG_NET_AIROHA_NPU))
+ 	struct device *dev;
+ 	struct regmap *regmap;
+ 
+@@ -208,7 +208,6 @@
+ 		void (*wlan_enable_irq)(struct airoha_npu *npu, int q);
+ 		void (*wlan_disable_irq)(struct airoha_npu *npu, int q);
+ 	} ops;
+-#endif
+ };
+ 
+ #if (IS_BUILTIN(CONFIG_NET_AIROHA_NPU) || IS_MODULE(CONFIG_NET_AIROHA_NPU))
+@@ -264,7 +263,7 @@
+ #else
+ static inline struct airoha_npu *airoha_npu_get(struct device *dev)
+ {
+-	return NULL;
++	return ERR_PTR(-EOPNOTSUPP);
+ }
+ 
+ static inline void airoha_npu_put(struct airoha_npu *npu)

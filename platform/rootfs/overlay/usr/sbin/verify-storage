@@ -1,0 +1,41 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Check the storage invariants of a normal boot: read-only SquashFS root under a
+# RAM overlay, `system` attached read-only, `durable` detached, and no NAND
+# erase, program or remap since power-on. Prints W1700K_STORAGE_READY on success.
+set -eu
+. /etc/w1700k/storage.conf
+fail() { echo "W1700K_STORAGE_FAILED: $*" >&2; exit 1; }
+
+grep -Eq '^overlay / overlay rw,.*lowerdir=' /proc/mounts || fail "root is not OverlayFS"
+grep -Eq ' /\.lower squashfs ro[, ]' /proc/mounts || fail "lower root is not read-only SquashFS"
+for row in "/run:$RUN_SIZE" "/tmp:$TMP_SIZE" "/var/tmp:$VAR_TMP_SIZE" "/work:$WORK_SIZE"; do
+	path=${row%%:*}; size=${row#*:}
+	grep -Eq " ${path} tmpfs rw,.*size=${size}" /proc/mounts || fail "$path tmpfs size differs"
+done
+
+# A recovery boot runs the root from RAM; the NAND checks apply to installed boots.
+if grep -Eq '^/dev/ubiblock0_3 /\.lower ' /proc/mounts; then
+	[ "$(cat /sys/class/ubi/ubi0/ro_mode)" = 1 ] || fail "ubi0 is not read-only"
+	[ "$(cat /sys/class/ubi/ubi0_2/name)" = fit ] || fail "volume 2 is not fit"
+	[ "$(cat /sys/class/ubi/ubi0_3/name)" = rootfs ] || fail "volume 3 is not rootfs"
+	! grep -q '"spi-nand0"' /proc/mtd || fail "the writable whole-chip MTD is exposed"
+fi
+
+for node in /sys/class/mtd/mtd[0-9]*; do
+	case $node in *ro) continue ;; esac
+	[ "$(cat "$node/name")" = durable ] || continue
+	durable_mtd=${node##*mtd}
+	for ubi in /sys/class/ubi/ubi[0-9]*; do
+		[ -r "$ubi/mtd_num" ] || continue
+		[ "$(cat "$ubi/mtd_num")" != "$durable_mtd" ] || fail "durable is attached"
+	done
+done
+
+counters=/sys/kernel/sdr_bmt/counters
+[ -r "$counters" ] || fail "BMT counters are absent"
+for name in erase_completed program_completed markbad_completed remap_publications; do
+	value=$(awk -F= -v key="$name" '$1 == key { print $2 }' "$counters")
+	[ "$value" = 0 ] || fail "$name is $value; something wrote NAND during boot"
+done
+echo W1700K_STORAGE_READY

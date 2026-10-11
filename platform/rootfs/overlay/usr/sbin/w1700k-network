@@ -1,0 +1,23 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Bring up the management and IQ export ports from /etc/w1700k/network.conf.
+set -u
+. /etc/w1700k/network.conf
+failed=0
+fail() { echo "w1700k-network: $*" >&2; failed=1; }
+
+ip link set "$MGMT_IF" up || fail "cannot bring up $MGMT_IF"
+ip address replace "$MGMT_ADDRESS" dev "$MGMT_IF" || fail "cannot address $MGMT_IF"
+
+# The export pump sends 8 KiB slices in single datagrams, so the MTU must be set
+# before the link carries traffic.
+ip link set "$EXPORT_IF" mtu "$EXPORT_MTU" || fail "cannot set the $EXPORT_IF MTU"
+ip link set "$EXPORT_IF" up || fail "cannot bring up $EXPORT_IF"
+ip address replace "$EXPORT_ADDRESS" dev "$EXPORT_IF" || fail "cannot address $EXPORT_IF"
+
+# All airoha_eth QDMA interrupts on CPU0, away from the CPUs the stream reader
+# and the export thread are pinned to.
+for irq in $(awk '/airoha_eth/ { sub(":", "", $1); print $1 }' /proc/interrupts); do
+	echo 0 > "/proc/irq/$irq/smp_affinity_list" || fail "cannot pin IRQ $irq"
+done
+exit "$failed"

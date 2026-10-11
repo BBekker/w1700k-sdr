@@ -1,0 +1,40 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Attach the durable UBI volume read-write and mount it on /durable.
+# Close it again with durable-close; durable-run wraps one command in both.
+set -eu
+. /etc/w1700k/storage.conf
+lock=/run/durable.lock
+attached=0
+mounted=0
+fail() { echo "durable-open: $*" >&2; exit 1; }
+cleanup()
+{
+	[ $? = 0 ] && return
+	[ "$mounted" = 0 ] || umount /durable || :
+	[ "$attached" = 0 ] || ubidetach -d "$DURABLE_UBI" || :
+	rmdir "$lock" 2>/dev/null || :
+}
+trap cleanup EXIT INT TERM HUP
+mkdir "$lock" 2>/dev/null || fail "durable is already open"
+
+mtd=
+for node in /sys/class/mtd/mtd[0-9]*; do
+	case $node in *ro) continue ;; esac
+	[ "$(cat "$node/name")" = durable ] || continue
+	[ -z "$mtd" ] || fail "more than one durable MTD"
+	[ "$(cat "$node/offset")" = "$((DURABLE_OFFSET))" ] || fail "durable offset differs"
+	[ "$(cat "$node/size")" = "$((DURABLE_SIZE))" ] || fail "durable size differs"
+	mtd=${node##*mtd}
+done
+[ -n "$mtd" ] || fail "no durable MTD"
+[ ! -e "/sys/class/ubi/ubi$DURABLE_UBI" ] || fail "ubi$DURABLE_UBI is already in use"
+
+ubiattach -d "$DURABLE_UBI" -m "$mtd"
+attached=1
+volume=/sys/class/ubi/ubi${DURABLE_UBI}_${DURABLE_VOLUME_ID}
+[ "$(cat "$volume/name")" = durable ] || fail "volume $DURABLE_VOLUME_ID is not durable"
+mount -t ubifs -o noatime "/dev/ubi${DURABLE_UBI}_${DURABLE_VOLUME_ID}" /durable
+mounted=1
+trap - EXIT INT TERM HUP
+echo "durable-open: /durable mounted from mtd$mtd"

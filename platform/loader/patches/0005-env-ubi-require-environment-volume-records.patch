@@ -1,0 +1,137 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] env: ubi: require the environment volumes before attaching
+
+EC headers alone do not show that `system` was set up: an attach of
+half-formatted media can erase blocks. Require both layout copies to carry
+CRC-valid records for volumes 0 and 1 before environment load, save or erase
+attaches UBI.
+
+--- a/env/ubi.c
++++ b/env/ubi.c
+@@ -38,23 +38,49 @@
+  * Loading an environment from an unformatted, non-empty partition makes UBI
+  * scan the whole device before it can reject the media.  On the W1700K this
+  * happens before the first prompt, while "dev" still contains the stock OS.
+- * Bound that first-boot decision to eight good eraseblocks.  A formatted UBI
+- * device has two layout-volume PEBs with valid EC headers; random stock data or
+- * erased media cannot authorize the full attach merely by resembling one.
++ * Bound that first-boot decision to eight good eraseblocks.  EC headers alone
++ * are insufficient: an interrupted/empty attach can create them without the
++ * environment volumes and a later automatic attach may then erase application
++ * data it does not recognize.  Require both layout-volume copies to contain
++ * CRC-valid records for the two configured environment volumes.
+  *
+  * This probe is deliberately load/save/erase admission only.  `ubi part dev`
+  * remains the explicit operation that formats an erased development partition.
+  */
+ #define ENV_UBI_PROBE_GOOD_PEBS 8
+-#define ENV_UBI_REQUIRED_EC_HEADERS 2
++#define ENV_UBI_REQUIRED_LAYOUTS 2
++
++static int env_ubi_read(struct mtd_info *mtd, loff_t from, void *buf, size_t len)
++{
++	size_t retlen = 0;
++	int ret = mtd_read(mtd, from, len, &retlen, buf);
++
++	if (ret && !mtd_is_bitflip(ret))
++		return ret;
++	return retlen == len ? 0 : -EIO;
++}
++
++static int env_ubi_named_record(const struct ubi_vtbl_record *record,
++				const char *name)
++{
++	size_t len = strlen(name);
++	u32 crc;
++
++	if (len > UBI_VOL_NAME_MAX || be16_to_cpu(record->name_len) != len ||
++	    memcmp(record->name, name, len) || !be32_to_cpu(record->reserved_pebs))
++		return 0;
++	crc = crc32_le(UBI_CRC32_INIT, (u8 *)record, UBI_VTBL_RECORD_SIZE_CRC);
++	return be32_to_cpu(record->crc) == crc;
++}
+ 
+ int env_ubi_media_ready(void)
+ {
+ 	struct mtd_info *mtd;
+-	struct ubi_ec_hdr hdr;
+-	unsigned int checked = 0, valid = 0;
++	struct ubi_ec_hdr ec;
++	struct ubi_vid_hdr vid;
++	u8 *page = NULL;
++	unsigned int checked = 0, layouts = 0;
+ 	loff_t offset;
+-	size_t retlen;
+ 	int ret;
+ 
+ 	ret = mtd_probe_devices();
+@@ -63,10 +89,16 @@
+ 	mtd = get_mtd_device_nm(CONFIG_ENV_UBI_PART);
+ 	if (IS_ERR(mtd))
+ 		return PTR_ERR(mtd);
++	page = malloc(mtd->writesize);
++	if (!page) {
++		ret = -ENOMEM;
++		goto out;
++	}
+ 
+ 	for (offset = 0; offset < mtd->size &&
+ 	     checked < ENV_UBI_PROBE_GOOD_PEBS; offset += mtd->erasesize) {
+-		u32 crc;
++		struct ubi_vtbl_record *records = (struct ubi_vtbl_record *)page;
++		u32 crc, vid_offset, data_offset;
+ 
+ 		ret = mtd_block_isbad(mtd, offset);
+ 		if (ret < 0)
+@@ -74,25 +106,40 @@
+ 		if (ret)
+ 			continue;
+ 		checked++;
+-		retlen = 0;
+-		ret = mtd_read(mtd, offset, sizeof(hdr), &retlen, (u8 *)&hdr);
+-		if (ret && !mtd_is_bitflip(ret))
++		ret = env_ubi_read(mtd, offset, &ec, sizeof(ec));
++		if (ret)
+ 			goto out;
+-		if (retlen != sizeof(hdr)) {
+-			ret = -EIO;
++		crc = crc32_le(UBI_CRC32_INIT, (u8 *)&ec, UBI_EC_HDR_SIZE_CRC);
++		if (be32_to_cpu(ec.magic) != UBI_EC_HDR_MAGIC || ec.version != UBI_VERSION ||
++		    be32_to_cpu(ec.hdr_crc) != crc)
++			continue;
++		vid_offset = be32_to_cpu(ec.vid_hdr_offset);
++		data_offset = be32_to_cpu(ec.data_offset);
++		if (vid_offset + sizeof(vid) > mtd->erasesize ||
++		    data_offset + mtd->writesize > mtd->erasesize)
++			continue;
++		ret = env_ubi_read(mtd, offset + vid_offset, &vid, sizeof(vid));
++		if (ret)
+ 			goto out;
+-		}
+-		crc = crc32_le(UBI_CRC32_INIT, (u8 *)&hdr, UBI_EC_HDR_SIZE_CRC);
+-		if (be32_to_cpu(hdr.magic) == UBI_EC_HDR_MAGIC &&
+-		    hdr.version == UBI_VERSION &&
+-		    be32_to_cpu(hdr.hdr_crc) == crc &&
+-		    ++valid == ENV_UBI_REQUIRED_EC_HEADERS) {
++		crc = crc32_le(UBI_CRC32_INIT, (u8 *)&vid, UBI_VID_HDR_SIZE_CRC);
++		if (be32_to_cpu(vid.magic) != UBI_VID_HDR_MAGIC ||
++		    vid.version != UBI_VERSION || be32_to_cpu(vid.hdr_crc) != crc ||
++		    be32_to_cpu(vid.vol_id) != UBI_LAYOUT_VOLUME_ID ||
++		    be32_to_cpu(vid.lnum) >= UBI_LAYOUT_VOLUME_EBS)
++			continue;
++		ret = env_ubi_read(mtd, offset + data_offset, page, mtd->writesize);
++		if (ret)
++			goto out;
++		if (env_ubi_named_record(&records[0], CONFIG_ENV_UBI_VOLUME) &&
++		    env_ubi_named_record(&records[1], CONFIG_ENV_UBI_VOLUME_REDUND) &&
++		    ++layouts == ENV_UBI_REQUIRED_LAYOUTS) {
+ 			ret = 1;
+ 			goto out;
+ 		}
+ 	}
+ 	ret = 0;
+ out:
++	free(page);
+ 	put_mtd_device(mtd);
+ 	return ret;
+ }

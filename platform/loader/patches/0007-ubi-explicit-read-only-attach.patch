@@ -1,0 +1,98 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] cmd: ubi: add read-only and read-write attach
+
+`ubi part.ro` attaches without allowing writes, `ubi part.rw` with; a mode
+change detaches and reattaches. Autoboot and environment loading attach
+`system` read-only; saving the environment and updates attach read-write.
+
+--- a/include/ubi_uboot.h
++++ b/include/ubi_uboot.h
+@@ -50,0 +51,2 @@
++extern int ubi_part_ro(char *part_name, const char *vid_header_offset);
++extern int ubi_part_rw(char *part_name, const char *vid_header_offset);
+--- a/cmd/ubi.c
++++ b/cmd/ubi.c
+@@ -661 +661,2 @@
+-int ubi_part(char *part_name, const char *vid_header_offset)
++static int ubi_part_mode(char *part_name, const char *vid_header_offset,
++			 bool read_only)
+@@ -663,0 +665 @@
++	u32 saved_flags;
+@@ -666,2 +668,4 @@
+-	if (ubi && ubi->mtd && !strcmp(ubi->mtd->name, part_name)) {
+-		printf("UBI partition '%s' already selected\n", part_name);
++	if (ubi && ubi->mtd && !strcmp(ubi->mtd->name, part_name) &&
++	    !!ubi->ro_mode == read_only) {
++		printf("UBI partition '%s' already selected %s\n", part_name,
++		       read_only ? "read-only" : "read-write");
+@@ -670,0 +675 @@
++	/* A partition or mode change always gets a fresh UBI instance. */
+@@ -678,0 +684,3 @@
++	saved_flags = mtd->flags;
++	if (read_only)
++		mtd->flags &= ~MTD_WRITEABLE;
+@@ -681,0 +690 @@
++	mtd->flags = saved_flags;
+@@ -688,0 +698,8 @@
++	if (!ubi || !!ubi->ro_mode != read_only) {
++		printf("UBI partition '%s' did not enter requested %s mode\n",
++		       part_name, read_only ? "read-only" : "read-write");
++		ubi_detach();
++		return -EROFS;
++	}
++	printf("UBI partition '%s' selected %s\n", part_name,
++	       read_only ? "read-only" : "read-write");
+@@ -692,0 +710,15 @@
++int ubi_part(char *part_name, const char *vid_header_offset)
++{
++	return ubi_part_mode(part_name, vid_header_offset, false);
++}
++
++int ubi_part_ro(char *part_name, const char *vid_header_offset)
++{
++	return ubi_part_mode(part_name, vid_header_offset, true);
++}
++
++int ubi_part_rw(char *part_name, const char *vid_header_offset)
++{
++	return ubi_part_mode(part_name, vid_header_offset, false);
++}
++
+@@ -705 +737,3 @@
+-	if (strcmp(argv[1], "part") == 0) {
++	if (strcmp(argv[1], "part") == 0 ||
++	    strcmp(argv[1], "part.ro") == 0 ||
++	    strcmp(argv[1], "part.rw") == 0) {
+@@ -716,0 +751,2 @@
++			printf("Attach mode: %s\n",
++			       ubi->ro_mode ? "read-only" : "read-write");
+@@ -726 +762,3 @@
+-		return ubi_part(argv[2], vid_header_offset);
++		if (!strcmp(argv[1], "part.ro"))
++			return ubi_part_ro(argv[2], vid_header_offset);
++		return ubi_part_rw(argv[2], vid_header_offset);
+@@ -890,2 +928,2 @@
+-	"ubi part [part] [offset]\n"
+-		" - Show or set current partition (with optional VID"
++	"ubi part[.rw] [part] [offset]\n"
++		" - Show or attach a partition read-write (with optional VID"
+@@ -892,0 +931,2 @@
++	"ubi part.ro part [offset]\n"
++		" - Attach a partition read-only, detaching on a mode change\n"
+--- a/env/ubi.c
++++ b/env/ubi.c
+@@ -205 +205 @@
+-	if (ubi_part(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {
++	if (ubi_part_rw(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {
+@@ -250 +250 @@
+-	if (ubi_part(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {
++	if (ubi_part_rw(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {
+@@ -297 +297 @@
+-	if (ubi_part(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {
++	if (ubi_part_ro(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {
+@@ -341 +341 @@
+-	if (ubi_part(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {
++	if (ubi_part_ro(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {
+@@ -368 +368 @@
+-	if (ubi_part(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {
++	if (ubi_part_rw(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {

@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Build a unit's own root filesystem: the built root plus its SSH keys.
+
+init/install and init/flash do this themselves. Run it directly to set up a
+unit directory for a unit installed elsewhere, for example to keep its existing
+SSH host key:
+
+    init/provision --unit SERIAL --import-host-key /path/to/host_key
+"""
+import argparse
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from initkit import backup, config, provision         # noqa: E402
+
+
+def main():
+    settings = config.load()
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--unit', metavar='SERIAL', required=True)
+    parser.add_argument('--data-dir', type=Path, default=Path(settings['data_dir']))
+    parser.add_argument('--authorized-key', metavar='FILE',
+                        default=settings['authorized_key'])
+    parser.add_argument('--import-host-key', metavar='FILE')
+    args = parser.parse_args()
+    if not backup.SERIAL_FORM.match(args.unit):
+        parser.error('--unit must be the unit serial')
+    directory = config.unit_dir(args.data_dir, args.unit)
+    try:
+        image, host_key = provision.provision(directory, args.authorized_key,
+                                              args.import_host_key, address=settings['device_ip'])
+    except provision.ProvisionError as error:
+        sys.exit(f'provision: {error}')
+    print(f'provision: {image}')
+    print(f'provision: host key {provision.fingerprint(host_key)}')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

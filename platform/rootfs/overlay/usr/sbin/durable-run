@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Run one command with /durable open, closing it afterwards whatever happens.
+set -u
+[ "$#" -gt 0 ] || { echo "usage: durable-run command [args...]" >&2; exit 2; }
+/usr/sbin/durable-open || exit 1
+trap '/usr/sbin/durable-close; exit 125' INT TERM HUP
+"$@"
+status=$?
+trap - INT TERM HUP
+/usr/sbin/durable-close || [ "$status" != 0 ] || status=1
+exit "$status"

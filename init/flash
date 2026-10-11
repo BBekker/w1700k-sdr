@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Update an installed unit from the current build, from whatever state it is in.
+
+    init/flash --system            # FIT (kernel, device tree) and root
+    init/flash --fit               # FIT only
+    init/flash --rootfs            # the unit's root only
+    init/flash --loader            # our U-Boot in the loader partition
+    init/flash --durable           # erase durable storage
+    init/flash --recovery          # boot the recovery system from RAM; writes nothing
+    init/flash --detect-only       # report where the unit is; transmits one newline
+
+Run `make` first. See init/README.md.
+"""
+import argparse
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from initkit import config, session, update           # noqa: E402
+from initkit.console import StepFailed                # noqa: E402
+from initkit.provision import ProvisionError          # noqa: E402
+
+
+def main():
+    settings = config.load()
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    config.add_arguments(parser, settings)
+    parser.add_argument('--system', action='store_true', help='the FIT and the root')
+    parser.add_argument('--fit', action='store_true', help='the system FIT')
+    parser.add_argument('--rootfs', action='store_true', help="the unit's root")
+    parser.add_argument('--loader', action='store_true', help='our U-Boot')
+    parser.add_argument('--durable', action='store_true',
+                        help='erase durable storage (its contents are lost)')
+    parser.add_argument('--recovery', action='store_true',
+                        help='boot the recovery system from RAM instead of writing')
+    parser.add_argument('--detect-only', action='store_true',
+                        help='report the console state and exit')
+    parser.add_argument('--no-boot', action='store_true',
+                        help='stay at the loader prompt afterwards')
+    parser.add_argument('--unit', metavar='SERIAL',
+                        help='the unit whose keys go into the root (default: the only '
+                             'known unit)')
+    parser.add_argument('--authorized-key', metavar='FILE',
+                        default=settings['authorized_key'],
+                        help='SSH public key for root logins')
+    args = parser.parse_args()
+    targets = (args.system, args.fit, args.rootfs, args.loader, args.durable)
+    if args.recovery and any(targets):
+        parser.error('--recovery writes nothing; it cannot be combined with an update')
+    if not (args.detect_only or args.recovery or any(targets)):
+        parser.error('say what to update: --system, --fit, --rootfs, --loader or --durable')
+    settings = session.settings_from(args)
+    try:
+        if args.detect_only:
+            return update.detect(settings)
+        return update.run(settings, args.unit, fit=args.fit or args.system,
+                          rootfs=args.rootfs or args.system, durable=args.durable,
+                          loader=args.loader, recovery=args.recovery,
+                          boot=not args.no_boot, authorized_key=args.authorized_key)
+    except (StepFailed, ProvisionError, RuntimeError) as error:
+        sys.exit(f'flash: {error}')
+    except KeyboardInterrupt:
+        sys.exit('flash: interrupted')
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,452 @@
+# SPDX-License-Identifier: MIT
+"""Controller state transitions on a simulated unit running our firmware, and the `serve`
+protocol."""
+import io
+import json
+import threading
+import unittest
+
+import host_fake
+from host_fake import RADIO_ERR_HW, RADIO_ERR_ORDER
+from w1700k import radio, rf, stream
+from w1700k.controller import LOCK_MARGIN_HZ, LOCK_RESOLUTION_HZ, ControlError, Controller, handle, serve
+
+def setup(band, hz, bw):
+    """SETUP's arguments: band, the LO's low and high words, the bandwidth class."""
+    return ('setup', (band, hz & 0xFFFFFFFF, hz >> 32, bw))
+
+
+STOCK_LOAD = [('bringup', ()), setup(0, 2_442_000_000, 3), ('capture', (0, 3)), setup(2, 6_105_000_000, 3),
+              ('capture', (2, 3)), setup(1, 5_250_000_000, 3), ('capture', (1, 3)), ('select', (1,))]
+
+
+class ControllerTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = host_fake.temp_dir()
+        self.config = host_fake.make_config(self.tmp.name)
+        self.unit = host_fake.FakeUnit()
+        self.dev = self.unit.device
+        self.events = []
+        self.ctl = Controller(self.config, emit=self.events.append, unit=self.unit)
+        self.ctl.attach()
+
+    def tearDown(self):
+        self.ctl.close()
+        self.tmp.cleanup()
+
+    def loaded(self, band=1, narrow0=False):
+        """Loaded with `band` captured; narrow0: band 0 at 40 Msps (raw fits one link)."""
+        if narrow0:
+            self.ctl.bands[0] = radio.BandConfig(0, 2_442_000_000, 40_000_000).validate()
+        self.ctl.load(band)
+        self.dev.radio_commands.clear()
+        self.dev.rf_ops.clear()
+        self.events.clear()
+
+    def commands(self):
+        return [name for name, _ in self.dev.radio_commands]
+
+    def logs(self):
+        return [e['text'] for e in self.events if e.get('event') == 'log']
+
+
+class Load(ControllerTest):
+    def test_load_sequence(self):
+        """Driver reload, ownership, RESET_MT, our set; the EEPROM, BRINGUP, per band (the captured band
+        last) its analog filter (FILTER, before SETUP's DCOC), SETUP and CAPTURE, SELECT;
+        every band's lock read."""
+        self.ctl.load(1)
+        self.assertEqual(self.unit.module_replacements, 1)
+        self.assertEqual(self.dev.downloads, [('acquire',), ('--reset',), ('acquire',), ('w1700k_rom_patch.bin',),
+                                              ('w1700k_wm.bin',), ('w1700k_wa.bin', '--wa')])
+        self.assertEqual(self.dev.eeprom(), self.config.eeprom.read_bytes()[:7680])
+        self.assertEqual(self.dev.radio_commands, STOCK_LOAD)
+        ops = self.dev.rf_ops
+        self.assertEqual([o for o in ops if o[0] == rf.RF_FILTER], [(rf.RF_FILTER, b, 320, 0) for b in (0, 2, 1)])
+        self.assertEqual(ops[-1], (rf.RF_LOCKS, 0, 0, 0))
+        self.assertEqual({o[0] for o in ops[:-1]}, {rf.RF_FILTER, rf.RF_TUNE}, 'filters, then the lock probe')
+        # the lock probe: each band's span LOCK_MARGIN_HZ inside the edges, to the search's resolution
+        for band, (lo, hi) in self.dev.lock_span.items():
+            got_lo, got_hi = self.ctl.lo_lock[band]
+            for got, edge, inward in ((got_lo, lo, 1), (got_hi, hi, -1)):
+                self.assertLessEqual(0, (got - edge) * inward - LOCK_MARGIN_HZ, band)
+                self.assertLessEqual((got - edge) * inward - LOCK_MARGIN_HZ, LOCK_RESOLUTION_HZ, band)
+        self.assertEqual(self.dev.lo, {0: 2_441_999_999, 1: 5_250_000_000, 2: 6_105_000_000}, 'retuned home')
+        self.assertEqual(self.dev.icap_band, 1)
+        self.assertFalse(self.dev.wa_up, 'the WA starts with the first packed stream, not at load')
+        state = self.ctl.state()
+        self.assertTrue(state['radio']['loaded'])
+        self.assertEqual(state['radio']['bands_ready'], [0, 1, 2])
+        self.assertEqual(state['radio']['synth_locked'], [True, True, True])
+        self.assertEqual(state['stream'], {'running': False, 'packing': None, 'sample_rate': 320_000_000,
+                                           'center_hz': 5_250_000_000})
+        progress = [e['fraction'] for e in self.events if e.get('event') == 'progress']
+        self.assertEqual((progress[0], progress[-1]), (0.0, 1.0))
+        self.assertIsNone(state['error'])
+
+    def test_second_load_skips_staged_files(self):
+        self.ctl.load(0)
+        pushes = [c for c in self.unit.log if isinstance(c, str) and c.startswith('push /tmp/w1700k-fw/')]
+        self.ctl.load(0)
+        again = [c for c in self.unit.log if isinstance(c, str) and c.startswith('push /tmp/w1700k-fw/')]
+        self.assertEqual(len(pushes), 3)
+        self.assertEqual(again, pushes)
+        self.assertEqual(self.unit.module_replacements, 2)
+
+    def test_radio_command_failure(self):
+        """A refused radio command names the command, the firmware's reason and its failure record."""
+        self.dev.radio_failures['setup'] = (RADIO_ERR_HW, 2, 0x24CA7)
+        with self.assertRaises(ControlError) as caught:
+            self.ctl.load(1)
+        self.assertEqual(str(caught.exception), 'setup: hardware access failed (A-die poll timed out at 0x24ca7)')
+        state = self.ctl.state()
+        self.assertFalse(state['radio']['loaded'])
+        self.assertEqual(state['error'], str(caught.exception))
+        self.assertEqual(self.commands(), ['bringup', 'setup'])
+
+    def test_radio_result_without_failure_record(self):
+        self.dev.radio_failures['bringup'] = (RADIO_ERR_ORDER, 0, 0)
+        with self.assertRaisesRegex(ControlError, '^bringup: a prerequisite has not run$'):
+            self.ctl.load()
+
+    def test_download_failure(self):
+        self.dev.download_failure = 'w1700k_wm.bin'
+        with self.assertRaisesRegex(RuntimeError, 'wm download failed: phase_name WAIT_DOWNLOAD, errno Timer expired'):
+            self.ctl.load()
+        self.assertEqual(self.dev.radio_commands, [])
+        self.assertFalse(self.ctl.state()['radio']['loaded'])
+
+    def test_state_survives_a_new_controller(self):
+        self.ctl.load(2)
+        self.ctl.start()
+        other = Controller(self.config, unit=self.unit)
+        other.attach()
+        self.assertEqual(other.state()['radio'], self.ctl.state()['radio'])
+        self.assertEqual(other.state()['stream'], self.ctl.state()['stream'])
+        other.stop()
+        self.assertFalse(self.dev.streaming)
+        other.close()
+
+    def test_state_of_another_boot_is_ignored(self):
+        self.ctl.load(2)
+        record = json.loads(self.unit.files['/tmp/w1700k-state.json'])
+        record['boot_id'] = 'an earlier boot'
+        self.unit.files['/tmp/w1700k-state.json'] = json.dumps(record).encode()
+        other = Controller(self.config, unit=self.unit)
+        other.attach()
+        self.assertFalse(other.state()['radio']['loaded'])
+        other.close()
+
+    def test_missing_eeprom(self):
+        self.config.eeprom.unlink()
+        with self.assertRaises(ControlError):
+            self.ctl.load()
+        self.assertIn('EEPROM', self.ctl.state()['error'])
+        self.assertEqual(self.unit.module_replacements, 0, 'checked before the driver is touched')
+
+
+class Streaming(ControllerTest):
+    def test_start_raw_and_stop(self):
+        self.loaded(0, narrow0=True)
+        self.ctl.start()
+        self.assertEqual(self.dev.radio_commands, [('stream', (0,))])
+        self.assertTrue(self.dev.streaming and self.dev.route_armed)
+        argv = ' '.join(self.dev.pump_argv)
+        self.assertIn('--go 0x0090f008 0x474f474f', argv)
+        self.assertIn('--stop 0x0090f008 0x504f5453', argv)
+        self.assertIn('--export eth1 10.77.0.1 10.77.0.10 02:00:00:00:00:01 7700 --ports 8', argv)
+        self.assertFalse(self.dev.wa_up, 'no WA for raw')
+        state = self.ctl.state()
+        self.assertEqual((state['stream']['running'], state['stream']['packing']), (True, 'raw'))
+        self.ctl.stop()
+        self.assertFalse(self.dev.streaming or self.dev.route_armed)
+        self.assertIsNone(self.ctl.state()['stream']['packing'])
+        self.assertIn('stream stopped: 1000 chunks in 1.0 s', self.logs())
+
+    def test_raw_then_half_without_reload(self):
+        self.loaded(0, narrow0=True)
+        self.ctl.start()
+        self.ctl.stop()
+        self.ctl.configure(1)
+        self.ctl.start()
+        self.assertTrue(self.dev.wa_up)
+        self.assertEqual(self.ctl.state()['stream']['packing'], 'half')
+        self.ctl.stop()
+        self.ctl.configure(0)
+        self.ctl.start()
+        self.assertEqual(self.dev.radio_commands, [('stream', (0,)), ('select', (1,)), ('stream', (1,)),
+                                                   ('select', (0,)), ('stream', (0,))])
+        self.assertEqual(self.unit.module_replacements, 1)
+
+    def test_packing_follows_the_rate(self):
+        self.loaded(1)
+        self.ctl.start()
+        self.assertEqual(self.ctl.state()['stream']['packing'], 'half')
+        self.ctl.start()                                    # already running so: nothing
+        self.assertEqual(self.commands(), ['stream'])
+
+    def test_start_loads_when_needed(self):
+        self.ctl.start()
+        self.assertEqual(self.unit.module_replacements, 1)
+        self.assertEqual(self.commands(), [name for name, _ in STOCK_LOAD] + ['stream'])
+        self.assertTrue(self.ctl.state()['stream']['running'])
+
+    def test_small_mtu_refused(self):
+        self.loaded(0)
+        self.dev.mtu = 1500
+        with self.assertRaisesRegex(stream.StreamError, 'MTU is 1500'):
+            self.ctl.start()
+        self.assertFalse(self.dev.streaming)
+        self.assertEqual(self.dev.radio_commands, [])
+
+    def test_ctl_timeout_while_the_stream_sets_up(self):
+        self.loaded(0)
+        self.dev.setup_timeouts = 2
+        self.ctl.start()
+        self.assertTrue(self.ctl.state()['stream']['running'])
+
+    def test_stream_ending_on_its_own(self):
+        self.loaded(0)
+        self.ctl.start()
+        self.unit.end_stream(3)                              # the producer saw an overrun
+        self.ctl.poll()
+        state = self.ctl.state()
+        self.assertFalse(state['stream']['running'])
+        self.assertEqual(state['error'], 'the stream ended: overrun')
+        self.ctl.start()
+        self.assertTrue(self.ctl.state()['stream']['running'])
+        self.assertEqual(self.unit.module_replacements, 1)
+
+    def test_wa_left_in_the_packer(self):
+        self.loaded(1)
+        self.ctl.start()
+        self.dev.wa_stuck = True
+        self.ctl.stop()
+        self.assertIn('stream clean-up: the WA did not leave the packer; reload the firmware', self.logs())
+        self.assertTrue(self.dev.route_armed, 'the route stays while a core may read the pool')
+        self.assertFalse(self.ctl.state()['stream']['running'])
+
+    def test_unlocked_synthesizer_is_reported(self):
+        self.loaded(1)
+        self.dev.sx_status[2] = 2
+        self.dev.unlocking[2] = 2             # and its retunes do not lock either: only a power cycle helps
+        self.ctl.start()
+        state = self.ctl.state()
+        self.assertTrue(state['stream']['running'])
+        self.assertEqual(state['radio']['synth_locked'], [True, True, False])
+        self.assertIn('band 2 synthesizer unlocked', state['error'])
+        self.assertIn('power-cycle', state['error'])
+        self.ctl.stop()
+        self.ctl.load()
+        self.assertEqual(self.ctl.state()['radio']['synth_locked'], [True, True, False],
+                         'a reload does not reset the A-dies')
+
+
+class RfControl(ControllerTest):
+    def test_tune_gain_filter_trim(self):
+        """RF commands on our WM, with or without a stream."""
+        self.loaded(1)
+        self.ctl.tune(5_300_000_000)
+        self.ctl.gain(lna=2, lpf=9)
+        self.ctl.filter(80)
+        self.assertEqual(self.ctl.trim(7), [0x10700] * 4)
+        self.assertEqual(self.dev.rf_ops, [(rf.RF_TUNE, 1, 5_300_000_000 & 0xFFFFFFFF, 1), (rf.RF_GAIN, 1, 2, 9),
+                                           (rf.RF_FILTER, 1, 80, 0), (rf.RF_TRIM, 1, 7, 0)])
+        state = self.ctl.state()
+        self.assertEqual((state['rf']['lo_hz'], state['stream']['center_hz']), (5_300_000_000, 5_300_000_000))
+        self.assertEqual((state['rf']['agc'], state['rf']['lna'], state['rf']['lpf']), (False, 2, 9))
+        self.assertEqual(state['rf']['filter_mhz'], 80)
+        self.assertEqual(state['rf']['lo_range_hz'], list(self.ctl.lo_lock[1]))
+        self.ctl.gain(agc=True)
+        self.assertEqual(self.dev.rf_ops[-1], (rf.RF_GAIN, 1, rf.RF_GAIN_AGC, 0))
+        self.assertEqual((self.ctl.state()['rf']['agc'], self.ctl.state()['rf']['lna']), (True, None))
+        self.assertEqual(self.dev.radio_commands, [], 'RF control is no radio command')
+
+    def test_while_streaming(self):
+        self.loaded(0)
+        self.ctl.start()
+        self.ctl.tune(2_450_000_000)
+        self.assertTrue(self.dev.streaming)
+        self.assertEqual(self.dev.lo[0], 2_450_000_000)
+        self.assertEqual(self.ctl.state()['rf']['lo_range_hz'], list(self.ctl.lo_lock[0]))
+
+    def test_status(self):
+        self.loaded(1)
+        self.ctl.tune(5_300_000_000)
+        self.ctl.gain(lna=2, lpf=9)
+        self.ctl.filter(80)
+        out = self.ctl.rf_status()
+        self.assertEqual(out, {'band': 1, 'vco_hz': 8_480_000_000, 'vco': 'locked', 'firmware_lo_khz': 5_300_000,
+                               'filter_codes': [2] * 4, 'gain': ['lna 2 lpf 9'] * 4})
+        self.assertEqual(self.dev.rf_ops[-2:], [(rf.RF_STATUS, 1, 0, 0), (rf.RF_LOCKS, 0, 0, 0)])
+
+    def test_refusals(self):
+        self.loaded(1)
+        for call in (lambda: self.ctl.tune(3_000_000_000), lambda: self.ctl.filter(30),
+                     lambda: self.ctl.gain(lna=2), lambda: self.ctl.gain(lna=5, lpf=0)):
+            with self.assertRaises(ValueError):
+                call()
+        self.assertEqual(self.dev.rf_ops, [])
+
+    def test_not_loaded(self):
+        with self.assertRaisesRegex(ControlError, 'not loaded'):
+            self.ctl.tune(5_300_000_000)
+
+    def test_synth_unlocked(self):
+        self.loaded(1)
+        self.dev.unlocking[1] = 1
+        with self.assertRaisesRegex(rf.SynthUnlocked, 'band 1 synthesizer unlocked: the VCO did not lock at '
+                                                      '5300.000 MHz \\(too low\\)'):
+            self.ctl.tune(5_300_000_000)
+        state = self.ctl.state()
+        self.assertEqual(state['radio']['synth_locked'], [True, False, True])
+        self.assertEqual(state['rf']['lo_hz'], 5_250_000_000)
+        del self.dev.unlocking[1]
+        self.ctl.tune(5_300_000_000)
+        self.assertEqual(self.ctl.state()['radio']['synth_locked'], [True, True, True])
+
+
+class BandSwitch(ControllerTest):
+    def test_mid_stream_switch(self):
+        """A ready band at the same sample rate: one RF band command, the stream keeps running."""
+        self.loaded(1)
+        self.ctl.start()
+        self.ctl.configure(2)
+        self.assertTrue(self.dev.streaming)
+        self.assertEqual(self.dev.rf_ops[-2:], [(rf.RF_BAND, 2, 0, 0), (rf.RF_LOCKS, 0, 0, 0)])
+        self.assertEqual(self.dev.icap_band, 2)
+        self.assertEqual(self.dev.radio_commands, [('stream', (1,))])
+        self.assertTrue(any(t.startswith('capturing band 2 from ICAP0 write pointer 0x') for t in self.logs()))
+        state = self.ctl.state()
+        self.assertEqual((state['radio']['band'], state['stream']['center_hz']), (2, 6_105_000_000))
+        self.assertEqual(self.unit.module_replacements, 1)
+
+    def test_raw_stream_to_a_wide_band_restarts_packed(self):
+        self.loaded(0, narrow0=True)
+        self.ctl.start()
+        self.ctl.configure(1)
+        self.assertEqual(self.dev.radio_commands, [('stream', (0,)), ('select', (1,)), ('stream', (1,))])
+        self.assertEqual(self.dev.icap_band, 1)
+        self.assertEqual(self.ctl.state()['stream']['packing'], 'half')
+        self.assertEqual(self.unit.module_replacements, 1)
+
+    def test_idle_switch(self):
+        self.loaded(1)
+        self.ctl.configure(0)
+        self.assertEqual(self.dev.radio_commands, [('select', (0,))])
+        self.assertEqual(self.ctl.state()['radio']['band'], 0)
+        self.ctl.configure(0, 320_000_000, 2_442_000_000)
+        self.assertEqual(len(self.dev.radio_commands), 1, 'already captured')
+
+    def test_new_rate_on_the_running_band(self):
+        """Stop, RATE and CAPTURE of that band, SELECT, start again with the new rate's packing; no
+        SETUP, the LO stays."""
+        self.loaded(1)
+        self.ctl.start()
+        self.ctl.configure(1, sample_rate=160_000_000)
+        self.assertEqual(self.dev.radio_commands, [('stream', (1,)), ('rate', (1, 2)), ('capture', (1, 2)),
+                                                   ('select', (1,)), ('stream', (0,))])
+        state = self.ctl.state()
+        self.assertTrue(state['stream']['running'])
+        self.assertEqual((state['radio']['lo_hz'], state['radio']['sample_rate']), (5_250_000_000, 160_000_000))
+        self.assertEqual((state['stream']['sample_rate'], state['stream']['packing']), (160_000_000, 'raw'))
+        self.assertEqual(self.unit.module_replacements, 1)
+
+    def test_lo_alone_mid_stream(self):
+        """A new LO is one TUNE, the stream keeps running; the band keeps the LO the grid realises."""
+        self.loaded(1)
+        self.ctl.start()
+        self.ctl.configure(1, lo_hz=5_530_000_007)
+        self.assertEqual(self.dev.radio_commands, [('stream', (1,))])
+        self.assertEqual(self.dev.rf_ops[-1], (rf.RF_TUNE, 1, 5_530_000_007 & 0xFFFFFFFF, 1))
+        state = self.ctl.state()
+        self.assertTrue(state['stream']['running'])
+        lo = radio.actual_lo(1, 5_530_000_007)
+        self.assertEqual((state['radio']['lo_hz'], state['rf']['lo_hz']), (lo, lo))
+        self.assertLess(abs(lo - 5_530_000_007), radio.lo_step(1, lo))
+
+    def test_failed_rate_is_not_ready(self):
+        """A band whose RATE failed is not ready; configuring it again runs RATE again."""
+        self.loaded(1)
+        self.dev.radio_failures['rate'] = (RADIO_ERR_HW, 2, 0x14CA7)
+        with self.assertRaises(ControlError):
+            self.ctl.configure(1, sample_rate=160_000_000)
+        self.assertEqual(self.ctl.state()['radio']['bands_ready'], [0, 2])
+        other = Controller(self.config, unit=self.unit)
+        other.attach()
+        self.assertEqual(other.state()['radio']['bands_ready'], [0, 2], 'saved so')
+        other.close()
+        self.ctl.configure(1, sample_rate=160_000_000)
+        self.assertEqual(self.commands(), ['rate', 'rate', 'capture', 'select'])
+        self.assertEqual(self.ctl.state()['radio']['bands_ready'], [0, 1, 2])
+
+    def test_configure_before_load_loads(self):
+        self.ctl.configure(2, 320_000_000)
+        self.assertIn(setup(2, 6_105_000_000, 3), self.dev.radio_commands)
+        self.assertEqual(self.dev.radio_commands[-1], ('select', (2,)))
+        self.assertTrue(self.ctl.state()['radio']['loaded'])
+
+    def test_bad_configuration(self):
+        self.loaded(1)
+        for bad in (dict(sample_rate=640_000_000), dict(lo_hz=3_000_000_000), dict(lo_hz=2_079_999_999)):
+            with self.assertRaises(ValueError):
+                self.ctl.configure(0, **bad)
+        self.assertEqual(self.dev.radio_commands, [])
+
+    def test_rate_alone(self):
+        """Another sample rate is RATE + CAPTURE: the LO, the gain and the filter stay."""
+        self.loaded(0)
+        self.ctl.tune(2_450_000_000)
+        self.ctl.filter(20)
+        self.dev.radio_commands.clear()
+        self.ctl.configure(0, sample_rate=40_000_000)
+        self.assertEqual(self.dev.radio_commands, [('rate', (0, 0)), ('capture', (0, 0)), ('select', (0,))])
+        rfs = self.ctl.state()['rf']
+        self.assertEqual((rfs['lo_hz'], rfs['filter_mhz'], self.ctl.state()['stream']['sample_rate']),
+                         (2_450_000_000, 20, 40_000_000))
+
+
+class Serve(ControllerTest):
+    def test_protocol(self):
+        lines = [{'id': 1, 'op': 'status'}, {'id': 2, 'op': 'load', 'band': 0}, {'id': 3, 'op': 'start'},
+                 {'id': 4, 'op': 'tune', 'hz': 2_450_000_000}, {'id': 5, 'op': 'bogus'},
+                 {'id': 6, 'op': 'gain', 'agc': True}, {'id': 7, 'op': 'configure', 'band': 1, 'sample_rate': 320_000_000},
+                 {'id': 8, 'op': 'filter', 'mhz': 'wide'}, {'id': 9, 'op': 'stop'}]
+        stdin = io.StringIO(''.join(json.dumps(x) + '\n' for x in lines) + 'not json\n')
+        stdout = io.StringIO()
+        ctl = Controller(self.config, unit=self.unit)
+        thread = threading.Thread(target=serve, args=(ctl, stdin, stdout, 0.05))
+        thread.start()
+        thread.join(30)
+        self.assertFalse(thread.is_alive())
+        out = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        replies = {o['id']: o for o in out if 'id' in o}
+        self.assertEqual(sorted(replies), list(range(1, 10)))
+        self.assertEqual(len([o for o in out if 'id' in o]), 9, 'exactly one reply per request')
+        self.assertEqual([i for i in replies if not replies[i]['ok']], [5, 8])
+        self.assertEqual(replies[5]['error'], "unknown op 'bogus'")
+        self.assertEqual(replies[8]['error'], 'mhz: expected int')
+        self.assertEqual(replies[4]['state']['rf']['lo_hz'], 2_450_000_000)
+        self.assertEqual(replies[7]['state']['stream']['packing'], 'half')
+        self.assertEqual(replies[7]['state']['radio']['band'], 1)
+        self.assertFalse(replies[9]['state']['stream']['running'])
+        events = [o['event'] for o in out if 'event' in o]
+        self.assertIn('state', events)
+        self.assertIn('progress', events)
+        self.assertIn('log', events)                    # the malformed line
+
+
+    def test_handle_checks_arguments(self):
+        for request, error in (({'op': 'configure', 'band': 1, 'sample_rate': '80'}, 'sample_rate: expected int'),
+                               ({'op': 'tune', 'hz': True}, 'hz: expected'),
+                               ({'op': 'load', 'band': '1'}, 'band: expected int')):
+            with self.assertRaisesRegex(ValueError, error):
+                handle(self.ctl, request)
+        self.assertEqual(self.dev.radio_commands, [])
+        self.assertEqual(handle(self.ctl, {'op': 'load'}), {})
+        self.assertEqual(self.ctl.state()['radio']['band'], 1)
+        handle(self.ctl, {'op': 'gain', 'lna': 1, 'lpf': 2})
+        self.assertEqual(self.dev.rf_ops[-1], (rf.RF_GAIN, 1, 1, 2))
+
+if __name__ == '__main__':
+    unittest.main()

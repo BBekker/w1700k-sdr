@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: MIT
+# CONFIG_TELNETD is not set
+# CONFIG_HTTPD is not set
+# CONFIG_FTPD is not set
+# CONFIG_TFTPD is not set
+# CONFIG_UDHCPD is not set
+# CONFIG_UDHCPC is not set
+# CONFIG_CROND is not set
+# CONFIG_INETD is not set
+CONFIG_ASH=y
+CONFIG_INIT=y
+CONFIG_FEATURE_USE_INITTAB=y
+CONFIG_MOUNT=y
+CONFIG_FEATURE_MOUNT_FLAGS=y
+CONFIG_IP=y
+CONFIG_FEATURE_IP_ADDRESS=y
+CONFIG_FEATURE_IP_LINK=y
+CONFIG_FEATURE_IP_ROUTE=y
+CONFIG_SETSID=y
+CONFIG_CTTYHACK=y
+# Use the pinned full mtd-utils implementations, not BusyBox duplicates.
+# CONFIG_FLASH_ERASEALL is not set
+# CONFIG_FLASH_LOCK is not set
+# CONFIG_FLASH_UNLOCK is not set
+# CONFIG_FLASHCP is not set
+# CONFIG_NANDWRITE is not set
+# CONFIG_NANDDUMP is not set
+# CONFIG_UBIATTACH is not set
+# CONFIG_UBIDETACH is not set
+# CONFIG_UBIMKVOL is not set
+# CONFIG_UBIRMVOL is not set
+# CONFIG_UBIRSVOL is not set
+# CONFIG_UBIUPDATEVOL is not set
+# CONFIG_UBIRENAME is not set

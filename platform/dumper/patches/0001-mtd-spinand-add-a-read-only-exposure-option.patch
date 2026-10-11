@@ -1,0 +1,206 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] mtd: spinand: add a read-only option without write code
+
+The dumper reads a unit before anything has been written to it. Under
+CONFIG_MTD_SPI_NAND_READ_ONLY the program, erase and mark-bad implementations
+are not compiled at all, OTP writes return -EROFS, the MTD write entries stay
+unset and MTD_WRITEABLE is cleared, so every MTD core write path refuses and
+has nothing to reach. Reads are unchanged.
+
+--- a/drivers/mtd/nand/spi/Kconfig
++++ b/drivers/mtd/nand/spi/Kconfig
+@@ -6,3 +6,18 @@
+ 	select SPI_MEM
+ 	help
+ 	  This is the framework for the SPI NAND device drivers.
++
++config MTD_SPI_NAND_READ_ONLY
++	bool "Expose SPI NAND read-only"
++	depends on MTD_SPI_NAND
++	help
++	  Compile out the page-write, erase and block-markbad implementations,
++	  refuse OTP writes, leave the corresponding MTD operations uninstalled
++	  and clear MTD_WRITEABLE on the detected chip. Every mutation path in
++	  the MTD core then refuses with -EROFS and none of them has an
++	  implementation to reach. Reads still perform the full controller and
++	  flash setup the normal driver does.
++
++	  For an image whose only job is to read a device before anything has
++	  been written to it. This is software policy, not hardware write
++	  protection.
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -457,6 +457,7 @@
+ 	return 0;
+ }
+ 
++#if !IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
+ static int spinand_write_to_cache_op(struct spinand_device *spinand,
+ 				     const struct nand_page_io_req *req)
+ {
+@@ -518,7 +519,9 @@
+ 
+ 	return 0;
+ }
++#endif /* !CONFIG_MTD_SPI_NAND_READ_ONLY */
+ 
++#if !IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
+ static int spinand_program_op(struct spinand_device *spinand,
+ 			      const struct nand_page_io_req *req)
+ {
+@@ -528,7 +531,9 @@
+ 
+ 	return spi_mem_exec_op(spinand->slave, &op);
+ }
++#endif /* !CONFIG_MTD_SPI_NAND_READ_ONLY */
+ 
++#if !IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
+ static int spinand_erase_op(struct spinand_device *spinand,
+ 			    const struct nand_pos *pos)
+ {
+@@ -538,6 +543,7 @@
+ 
+ 	return spi_mem_exec_op(spinand->slave, &op);
+ }
++#endif /* !CONFIG_MTD_SPI_NAND_READ_ONLY */
+ 
+ /**
+  * spinand_wait() - Poll memory device status
+@@ -672,6 +678,7 @@
+  * Return: 0 or a positive number of bitflips corrected on success.
+  * A negative error code otherwise.
+  */
++#if !IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
+ int spinand_write_page(struct spinand_device *spinand,
+ 		       const struct nand_page_io_req *req)
+ {
+@@ -707,6 +714,7 @@
+ 
+ 	return spinand_ondie_ecc_finish_io_req(nand, (struct nand_page_io_req *)req);
+ }
++#endif /* !CONFIG_MTD_SPI_NAND_READ_ONLY */
+ 
+ static int spinand_mtd_regular_page_read(struct mtd_info *mtd, loff_t from,
+ 					 struct mtd_oob_ops *ops,
+@@ -927,6 +935,7 @@
+ 	return ret ? ret : max_bitflips;
+ }
+ 
++#if !IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
+ static int spinand_mtd_write(struct mtd_info *mtd, loff_t to,
+ 			     struct mtd_oob_ops *ops)
+ {
+@@ -966,6 +975,7 @@
+ 
+ 	return ret;
+ }
++#endif /* !CONFIG_MTD_SPI_NAND_READ_ONLY */
+ 
+ static bool spinand_isbad(struct nand_device *nand, const struct nand_pos *pos)
+ {
+@@ -1015,6 +1025,7 @@
+ 	return ret;
+ }
+ 
++#if !IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
+ static int spinand_markbad(struct nand_device *nand, const struct nand_pos *pos)
+ {
+ 	struct spinand_device *spinand = nand_to_spinand(nand);
+@@ -1041,7 +1052,9 @@
+ 
+ 	return ret;
+ }
++#endif /* !CONFIG_MTD_SPI_NAND_READ_ONLY */
+ 
++#if !IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
+ static int spinand_mtd_block_markbad(struct mtd_info *mtd, loff_t offs)
+ {
+ 	struct nand_device *nand = mtd_to_nanddev(mtd);
+@@ -1062,7 +1075,9 @@
+ 
+ 	return ret;
+ }
++#endif /* !CONFIG_MTD_SPI_NAND_READ_ONLY */
+ 
++#if !IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
+ static int spinand_erase(struct nand_device *nand, const struct nand_pos *pos)
+ {
+ 	struct spinand_device *spinand = nand_to_spinand(nand);
+@@ -1091,7 +1106,9 @@
+ 
+ 	return ret;
+ }
++#endif /* !CONFIG_MTD_SPI_NAND_READ_ONLY */
+ 
++#if !IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
+ static int spinand_mtd_erase(struct mtd_info *mtd,
+ 			     struct erase_info *einfo)
+ {
+@@ -1110,6 +1127,7 @@
+ 
+ 	return ret;
+ }
++#endif /* !CONFIG_MTD_SPI_NAND_READ_ONLY */
+ 
+ static int spinand_mtd_block_isreserved(struct mtd_info *mtd, loff_t offs)
+ {
+@@ -1218,8 +1236,10 @@
+ }
+ 
+ static const struct nand_ops spinand_ops = {
++#if !IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
+ 	.erase = spinand_erase,
+ 	.markbad = spinand_markbad,
++#endif
+ 	.isbad = spinand_isbad,
+ };
+ 
+@@ -1584,10 +1604,18 @@
+ 	spinand_cont_read_init(spinand);
+ 
+ 	mtd->_read_oob = spinand_mtd_read;
+-	mtd->_write_oob = spinand_mtd_write;
+ 	mtd->_block_isbad = spinand_mtd_block_isbad;
+-	mtd->_block_markbad = spinand_mtd_block_markbad;
+ 	mtd->_block_isreserved = spinand_mtd_block_isreserved;
++
++#if IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
++	/*
++	 * Take the flag away as well, so the MTD core refuses with -EROFS
++	 * before it would reach an operation that is not there.
++	 */
++	mtd->flags &= ~MTD_WRITEABLE;
++#else
++	mtd->_write_oob = spinand_mtd_write;
++	mtd->_block_markbad = spinand_mtd_block_markbad;
+ 	mtd->_erase = spinand_mtd_erase;
+ 
+ 	if (spinand_user_otp_size(spinand) || spinand_fact_otp_size(spinand)) {
+@@ -1595,6 +1623,7 @@
+ 		if (ret)
+ 			goto err_cleanup_ecc_engine;
+ 	}
++#endif
+ 
+ 	ret = mtd_ooblayout_count_freebytes(mtd);
+ 	if (ret < 0)
+--- a/drivers/mtd/nand/spi/otp.c
++++ b/drivers/mtd/nand/spi/otp.c
+@@ -103,10 +103,15 @@
+ 				    otp_pagesize - req.dataoffs,
+ 				    len - copied);
+ 
+-		if (is_write)
++		if (is_write) {
++#if IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
++			ret = -EROFS;
++#else
+ 			ret = spinand_write_page(spinand, &req);
+-		else
++#endif
++		} else {
+ 			ret = spinand_read_page(spinand, &req);
++		}
+ 
+ 		if (ret < 0)
+ 			break;

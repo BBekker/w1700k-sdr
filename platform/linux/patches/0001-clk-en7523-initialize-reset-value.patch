@@ -1,0 +1,28 @@
+SPDX-License-Identifier: GPL-2.0-only
+Subject: [PATCH] clk: en7523: assign the masked reset value before use
+
+OpenWrt's PERSTOUT patch ORs the reset mask into an uninitialised local.
+regmap_update_bits() preserves the other bits, so the value must hold only
+the requested reset bit. Also return the regmap error to the caller.
+
+--- a/drivers/clk/clk-en7523.c
++++ b/drivers/clk/clk-en7523.c
+@@ -1033,14 +1033,12 @@ static int en7523_reset_update(struct reset_controller_dev *rcdev,
+ 
+ 	/* For PCIC reset logic is inverted, 0:assert 1:deassert*/
+ 	if (addr == REG_NP_SCU_PCIC)
+-		val |= assert ? 0 : BIT(id % RST_NR_PER_BANK);
++		val = assert ? 0 : BIT(id % RST_NR_PER_BANK);
+ 	else
+-		val |= assert ? BIT(id % RST_NR_PER_BANK) : 0;
++		val = assert ? BIT(id % RST_NR_PER_BANK) : 0;
+ 
+-	regmap_update_bits(rst_data->map, addr, BIT(id % RST_NR_PER_BANK),
+-			   val);
+-
+-	return 0;
++	return regmap_update_bits(rst_data->map, addr,
++				  BIT(id % RST_NR_PER_BANK), val);
+ }
+ 
+ static int en7523_reset_assert(struct reset_controller_dev *rcdev,

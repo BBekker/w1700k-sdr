@@ -1,0 +1,412 @@
+/* SPDX-License-Identifier: MIT */
+/*
+ * MT7996 PHY init of our own WM's cold bring-up (firmware/radio/bandinit.c):
+ * the per-band PHY init's register tables (phy_map.h MT7996_PHY_REGTBL_*) as
+ * named lists, and the init's chain counts. The rest of MediaTek's common PHY
+ * init, per-band PHY init (phy.h "Per-band PHY init") and PHY-init routine
+ * tail (phy_cal.h "Calibration init") is named at the registers: the chip SKU
+ * strap (conn.h CBTOP_PAD_GPIO_SKU), the AdieSel selection (phy_map.h
+ * MT7996_PHY_ADIESEL_*), the EEPROM fields (phy.h MT7996_PHY_EE_*), the
+ * field values (the _INIT names at their registers), and the offset names of
+ * the table rows of unknown role (phy.h, phy_cal.h MT7996_PHY_TSSI_*).
+ *
+ * GENERATED from MediaTek's WM (vendor__mt7996_wm_tm.elf) by the research
+ * tree's radio-port/bandinit/gen_headers.py; regenerate rather than edit.
+ *
+ * ADDRESS SPACE: WF bus as the WM sees it (phy.h); EEPROM offsets are into
+ * the host EEPROM image (radio.h ee8()).
+ * Confidence tags: [measured], [static], [inferred].
+ */
+#ifndef HW_MT7996_PHY_INIT_H
+#define HW_MT7996_PHY_INIT_H
+
+#include "../hw_bits.h"
+#include "phy.h"
+#include "phy_cal.h"
+
+/* ========================================================================
+ * Per-band PHY init (V:e00de622; phy.h "Per-band PHY init"): chain counts
+ * ======================================================================== */
+#define MT7996_PHY_INIT_CHAINS            5u	/* 0..4: RFINTF +0x268 / +0x26c / +0x28c */
+#define MT7996_PHY_INIT_TBL_CHAINS        4u	/* 0..3: tables, pages, +0x87ac, +0xd0d0.. */
+
+/* ========================================================================
+ * The per-band PHY init's register tables (phy_map.h MT7996_PHY_REGTBL_*),
+ * written by V:e00d8f80 after the per-band init's own words, in this order,
+ * whole words. Entries are band-0 registers; the writer adds band << 20.
+ * MediaTek's rows {u32 address, u16 value index} with the value table
+ * compressed by index; rows whose value is MT7996_PHY_REGTBL_SKIP are
+ * omitted here (MediaTek's writer skips them). Row numbers in comments.
+ * The same values on all three bands (oracle). [static][measured]
+ * ======================================================================== */
+/* Per-chain table: WM .data entries 0x221e540 (70 rows; 25 skip rows at BN
+ * +0xfd88..+0xffa4 omitted), values 0x221e1f4. V:e00d8ffe writes it to chains
+ * 0..3 (MT7996_PHY_INIT_TBL_CHAINS), every row of chain 0 before chain 1:
+ * entries are chain-0 registers, the writer adds chain << 16
+ * (MT7996_PHY_CHAIN_STRIDE). */
+#define MT7996_PHY_INIT_REGTBL_PERCHAIN(X) \
+	X(MT7996_PHY_CHAIN_2000(0, 0, 0x000u), 0x00000000u)	/* 0 */ \
+	X(MT7996_PHY_CHAIN_2000(0, 0, 0x004u), 0x00000000u)	/* 1 */ \
+	X(MT7996_PHY_CHAIN_2000(0, 0, 0x010u), 0x0040a0a0u)	/* 2 */ \
+	X(MT7996_PHY_CHAIN_2000(0, 0, 0x024u), 0x0020d0d0u)	/* 3 */ \
+	X(MT7996_PHY_CHAIN_2000(0, 0, 0x034u), 0x00000000u)	/* 4 */ \
+	X(MT7996_PHY_CHAIN_2000(0, 0, 0x038u), 0x00000000u)	/* 5 */ \
+	X(MT7996_PHY_CHAIN_2000(0, 0, 0x040u), 0x00000000u)	/* 6 */ \
+	X(MT7996_PHY_CHAIN_2000(0, 0, 0x070u), 0x00000000u)	/* 7 */ \
+	X(MT7996_PHY_CHAIN_2000(0, 0, 0x074u), 0x00000000u)	/* 8 */ \
+	X(MT7996_PHY_TSSI_018(0, 0), 0xb0000000u)	/* 9 */ \
+	X(MT7996_PHY_TSSI_014(0, 0), 0x00000000u)	/* 10 */ \
+	X(MT7996_PHY_TSSI_260(0, 0), 0x00000000u)	/* 11 */ \
+	X(MT7996_PHY_TSSI_DFE_BACKOFF1(0, 0), 0x80600000u)	/* 22 */ \
+	X(MT7996_PHY_TSSI_27C(0, 0), 0x807f0000u)	/* 23 */ \
+	X(MT7996_PHY_TSSI_278(0, 0), 0xc07f7f7fu)	/* 30 */ \
+	X(MT7996_PHY_CHAIN_D010(0, 0), 0x00002090u)	/* 33 */ \
+	X(MT7996_PHY_TXFLAT_CTRL(0, 0), 0x000000d1u)	/* 34 */ \
+	X(MT7996_PHY_CHAIN_D0D8(0, 0), 0xa0100000u)	/* 35 */ \
+	X(MT7996_PHY_CHAIN_D330(0, 0), 0x01430143u)	/* 36 */ \
+	X(MT7996_PHY_CHAIN_D334(0, 0), 0x01430143u)	/* 37 */ \
+	X(MT7996_PHY_CHAIN_D3AC(0, 0), 0x00e40143u)	/* 38 */ \
+	X(MT7996_PHY_CHAIN_D338(0, 0), 0x00e400e4u)	/* 39 */ \
+	X(MT7996_PHY_CHAIN_D33C(0, 0), 0x00e400e4u)	/* 40 */ \
+	X(MT7996_PHY_CHAIN_D104(0, 0), 0x01430143u)	/* 41 */ \
+	X(MT7996_PHY_CHAIN_D108(0, 0), 0x01430143u)	/* 42 */ \
+	X(MT7996_PHY_CHAIN_D10C(0, 0), 0x01430143u)	/* 43 */ \
+	X(MT7996_PHY_CHAIN_D110(0, 0), 0x01430000u)	/* 44 */ \
+	X(MT7996_PHY_CHAIN_D118(0, 0), 0x00e400e4u)	/* 45 */ \
+	X(MT7996_PHY_CHAIN_D11C(0, 0), 0x00e400e4u)	/* 46 */ \
+	X(MT7996_PHY_CHAIN_D120(0, 0), 0x00e400e4u)	/* 47 */ \
+	X(MT7996_PHY_CHAIN_D124(0, 0), 0x00e40000u)	/* 48 */ \
+	X(MT7996_PHY_CHAIN_D204(0, 0), 0x031c0000u)	/* 49 */ \
+	X(MT7996_PHY_CHAIN_D258(0, 0), 0x00008011u)	/* 50 */ \
+	X(MT7996_PHY_CHAIN_D25C(0, 0), 0x80000080u)	/* 51 */ \
+	X(MT7996_PHY_CHAIN_D268(0, 0), 0x00801180u)	/* 52 */ \
+	X(MT7996_PHY_CHAIN_D270(0, 0), 0x80000080u)	/* 53 */ \
+	X(MT7996_PHY_CHAIN_D278(0, 0), 0x80118000u)	/* 54 */ \
+	X(MT7996_PHY_CHAIN_D284(0, 0), 0x20600080u)	/* 55 */ \
+	X(MT7996_PHY_CHAIN_D288(0, 0), 0x11206000u)	/* 56 */ \
+	X(MT7996_PHY_CHAIN_D290(0, 0), 0x00800f10u)	/* 57 */ \
+	X(MT7996_PHY_CHAIN_D294(0, 0), 0x0000800fu)	/* 58 */ \
+	X(MT7996_PHY_CHAIN_D298(0, 0), 0x10000080u)	/* 59 */ \
+	X(MT7996_PHY_CHAIN_D29C(0, 0), 0x0f100000u)	/* 60 */ \
+	X(MT7996_PHY_CHAIN_D2A4(0, 0), 0x00801180u)	/* 61 */ \
+	X(MT7996_PHY_CHAIN_D2AC(0, 0), 0x80000000u)	/* 62 */
+#define MT7996_PHY_INIT_REGTBL_PERCHAIN_N 45u
+/* Absolute table: WM .data entries 0x221ce30 (312 rows, all written), values
+ * 0x221c564; V:e00d9028 (chain argument 0xf: no chain relocation; per-chain
+ * words name their chain). */
+#define MT7996_PHY_INIT_REGTBL_ABS(X) \
+	X(MT7996_PHY_WFCOMM_D418(0), 0x00000000u)	/* 0 */ \
+	X(MT7996_PHY_RDD_2000(0), 0x3be6a754u)	/* 1 */ \
+	X(MT7996_PHY_RDD_2010(0), 0xb8053435u)	/* 2 */ \
+	X(MT7996_PHY_RDD_203C(0), 0x71113037u)	/* 3 */ \
+	X(MT7996_PHY_RDD_21E4(0), 0x00b50008u)	/* 4 */ \
+	X(MT7996_PHY_RDD_2040(0), 0x0180020cu)	/* 5 */ \
+	X(MT7996_PHY_CHAIN_E01C(0, 0), 0x0200401fu)	/* 6 */ \
+	X(MT7996_PHY_CHAIN_E01C(0, 1), 0x0200401fu)	/* 7 */ \
+	X(MT7996_PHY_CHAIN_E01C(0, 2), 0x0200401fu)	/* 8 */ \
+	X(MT7996_PHY_CHAIN_E01C(0, 3), 0x0200401fu)	/* 9 */ \
+	X(MT7996_PHY_CHAIN_E01C(0, 4), 0x0200401fu)	/* 10 */ \
+	X(MT7996_PHY_CHAIN_E02C(0, 0), 0x2505c812u)	/* 11 */ \
+	X(MT7996_PHY_CHAIN_E02C(0, 1), 0x2505c812u)	/* 12 */ \
+	X(MT7996_PHY_CHAIN_E02C(0, 2), 0x2505c812u)	/* 13 */ \
+	X(MT7996_PHY_CHAIN_E02C(0, 3), 0x2505c812u)	/* 14 */ \
+	X(MT7996_PHY_CHAIN_E02C(0, 4), 0x2505c812u)	/* 15 */ \
+	X(MT7996_PHY_CHAIN_E070(0, 0), 0x00011850u)	/* 16 */ \
+	X(MT7996_PHY_CHAIN_E070(0, 1), 0x00011850u)	/* 17 */ \
+	X(MT7996_PHY_CHAIN_E070(0, 2), 0x00011850u)	/* 18 */ \
+	X(MT7996_PHY_CHAIN_E070(0, 3), 0x00011850u)	/* 19 */ \
+	X(MT7996_PHY_CHAIN_E070(0, 4), 0x00011850u)	/* 20 */ \
+	X(MT7996_PHY_CSD_13C(0, 0), 0x90b02124u)	/* 21 */ \
+	X(MT7996_PHY_CSD_13C(0, 1), 0x90b02124u)	/* 22 */ \
+	X(MT7996_PHY_CSD_13C(0, 2), 0x90b02124u)	/* 23 */ \
+	X(MT7996_PHY_CSD_13C(0, 3), 0x90b02124u)	/* 24 */ \
+	X(MT7996_PHY_CSD_13C(0, 4), 0x90b02124u)	/* 25 */ \
+	X(MT7996_PHY_BN_8550(0), 0x0698000au)	/* 26 */ \
+	X(MT7996_PHY_BN_8218(0), 0x68af8000u)	/* 27 */ \
+	X(MT7996_PHY_WFCOMM_610C(0), 0x19837212u)	/* 28 */ \
+	X(MT7996_PHY_WFCOMM_6110(0), 0x28c00ca0u)	/* 29 */ \
+	X(MT7996_PHY_WFCOMM_6114(0), 0x19837212u)	/* 30 */ \
+	X(MT7996_PHY_WFCOMM_611C(0), 0xc302d524u)	/* 31 */ \
+	X(MT7996_PHY_WFCOMM_6128(0), 0xf0c30c30u)	/* 32 */ \
+	X(MT7996_PHY_WFCOMM_612C(0), 0x080000bau)	/* 33 */ \
+	X(MT7996_PHY_BN_83A0(0), 0x00050a0fu)	/* 34 */ \
+	X(MT7996_PHY_BN_83A4(0), 0x0000000fu)	/* 35 */ \
+	X(MT7996_PHY_BN_83AC(0), 0x00050a0fu)	/* 36 */ \
+	X(MT7996_PHY_BN_83B0(0), 0x0000000fu)	/* 37 */ \
+	X(MT7996_PHY_CSD_144(0, 0), 0x00809c00u)	/* 38 */ \
+	X(MT7996_PHY_CSD_144(0, 1), 0x00809c00u)	/* 39 */ \
+	X(MT7996_PHY_CSD_144(0, 2), 0x00809c00u)	/* 40 */ \
+	X(MT7996_PHY_CSD_144(0, 3), 0x00809c00u)	/* 41 */ \
+	X(MT7996_PHY_CSD_144(0, 4), 0x00809c00u)	/* 42 */ \
+	X(MT7996_PHY_WFCOMM_0044(0), 0x00101930u)	/* 43 */ \
+	X(MT7996_PHY_WFCOMM_0058(0), 0x01004e0cu)	/* 44 */ \
+	X(MT7996_PHY_WFCOMM_005C(0), 0x0000500eu)	/* 45 */ \
+	X(MT7996_PHY_WFCOMM_0078(0), 0x015a1616u)	/* 46 */ \
+	X(MT7996_PHY_CSD_1F0(0, 0), 0x0c0c3cfau)	/* 47 */ \
+	X(MT7996_PHY_CSD_1F0(0, 1), 0x0c0c3cfau)	/* 48 */ \
+	X(MT7996_PHY_CSD_1F0(0, 2), 0x0c0c3cfau)	/* 49 */ \
+	X(MT7996_PHY_CSD_1F0(0, 3), 0x0c0c3cfau)	/* 50 */ \
+	X(MT7996_PHY_CSD_1F0(0, 4), 0x0c0c3cfau)	/* 51 */ \
+	X(MT7996_PHY_RXFE_CTRL(0), 0x01010000u)	/* 52 */ \
+	X(MT7996_PHY_WFCOMM_6070(0), 0x008a1900u)	/* 53 */ \
+	X(MT7996_PHY_DFE_F16C(0), 0x00000002u)	/* 54 */ \
+	X(MT7996_PHY_DFE_F174(0), 0x00000000u)	/* 55 */ \
+	X(MT7996_PHY_RXGAIN_D(0, 0), 0x0040f0fau)	/* 56 */ \
+	X(MT7996_PHY_RXGAIN_D(0, 1), 0x0040f0fau)	/* 57 */ \
+	X(MT7996_PHY_RXGAIN_D(0, 2), 0x0040f0fau)	/* 58 */ \
+	X(MT7996_PHY_RXGAIN_D(0, 3), 0x0040f0fau)	/* 59 */ \
+	X(MT7996_PHY_RXGAIN_D(0, 4), 0x0040f0fau)	/* 60 */ \
+	X(MT7996_PHY_WFCOMM_7600(0), 0x1af007afu)	/* 61 */ \
+	X(MT7996_PHY_WFCOMM_7820(0), 0x004021d8u)	/* 62 */ \
+	X(MT7996_PHY_WFCOMM_77EC(0), 0x01233301u)	/* 63 */ \
+	X(MT7996_PHY_BN_6148(0), 0x0820c160u)	/* 64 */ \
+	X(MT7996_PHY_BN_614C(0), 0x00080008u)	/* 65 */ \
+	X(MT7996_PHY_WFCOMM_7368(0), 0x0080c81du)	/* 66 */ \
+	X(MT7996_PHY_WFCOMM_7374(0), 0x24924000u)	/* 67 */ \
+	X(MT7996_PHY_WFCOMM_7378(0), 0x24924000u)	/* 68 */ \
+	X(MT7996_PHY_WFCOMM_737C(0), 0x24924000u)	/* 69 */ \
+	X(MT7996_PHY_WFCOMM_7380(0), 0x24924000u)	/* 70 */ \
+	X(MT7996_PHY_WFCOMM_7100(0), 0x001d1800u)	/* 71 */ \
+	X(MT7996_PHY_WFCOMM_7450(0), 0x30000000u)	/* 72 */ \
+	X(MT7996_PHY_WFCOMM_7130(0), 0x80050505u)	/* 73 */ \
+	X(MT7996_PHY_BN_6100(0), 0x00200020u)	/* 74 */ \
+	X(MT7996_PHY_WFCOMM_77E8(0), 0x23453602u)	/* 75 */ \
+	X(MT7996_PHY_WFCOMM_701C(0), 0x00000000u)	/* 76 */ \
+	X(MT7996_PHY_WFCOMM_736C(0), 0x0773cdf3u)	/* 77 */ \
+	X(MT7996_PHY_WFCOMM_7370(0), 0x0773cdf3u)	/* 78 */ \
+	X(MT7996_PHY_WFCOMM_7454(0), 0xe000003eu)	/* 79 */ \
+	X(MT7996_PHY_WFCOMM_7630(0), 0x00000a18u)	/* 80 */ \
+	X(MT7996_PHY_WFCOMM_7B90(0), 0x00104104u)	/* 81 */ \
+	X(MT7996_PHY_WFCOMM_752C(0), 0x00ab0000u)	/* 82 */ \
+	X(MT7996_PHY_WFCOMM_6808(0), 0x081011a3u)	/* 83 */ \
+	X(MT7996_PHY_WFCOMM_6828(0), 0x0428d1a3u)	/* 84 */ \
+	X(MT7996_PHY_WFCOMM_6804(0), 0x000000f6u)	/* 85 */ \
+	X(MT7996_PHY_WFCOMM_68A0(0), 0x20202020u)	/* 86 */ \
+	X(MT7996_PHY_WFCOMM_0080(0), 0x00810061u)	/* 87 */ \
+	X(MT7996_PHY_WFCOMM_0084(0), 0x00000010u)	/* 88 */ \
+	X(MT7996_PHY_BN_8020(0), 0xccbac400u)	/* 89 */ \
+	X(MT7996_PHY_WFCOMM_6814(0), 0x042911a3u)	/* 90 */ \
+	X(MT7996_PHY_WFCOMM_68B8(0), 0x00000000u)	/* 91 */ \
+	X(MT7996_PHY_AGC_CAGC(0, 0), 0x40234000u)	/* 92 */ \
+	X(MT7996_PHY_AGC_CAGC(0, 1), 0x40234000u)	/* 93 */ \
+	X(MT7996_PHY_AGC_CAGC(0, 2), 0x40234000u)	/* 94 */ \
+	X(MT7996_PHY_AGC_CAGC(0, 3), 0x40234000u)	/* 95 */ \
+	X(MT7996_PHY_AGC_CAGC(0, 4), 0x40234000u)	/* 96 */ \
+	X(MT7996_PHY_CSD_0F4(0, 0), 0x55000200u)	/* 97 */ \
+	X(MT7996_PHY_CSD_0F4(0, 1), 0x55000200u)	/* 98 */ \
+	X(MT7996_PHY_CSD_0F4(0, 2), 0x55000200u)	/* 99 */ \
+	X(MT7996_PHY_CSD_0F4(0, 3), 0x55000200u)	/* 100 */ \
+	X(MT7996_PHY_CSD_0F4(0, 4), 0x55000200u)	/* 101 */ \
+	X(MT7996_PHY_RDD_2044(0), 0x4010f38eu)	/* 102 */ \
+	X(MT7996_PHY_BN_82E4(0), 0x00a126aau)	/* 103 */ \
+	X(MT7996_PHY_WFCOMM_7444(0), 0xfff87fffu)	/* 104 */ \
+	X(MT7996_PHY_WFCOMM_7500(0), 0x025c6423u)	/* 105 */ \
+	X(MT7996_PHY_WFCOMM_7634(0), 0x30ff0c30u)	/* 106 */ \
+	X(MT7996_PHY_BN_60E4(0), 0x50410151u)	/* 107 */ \
+	X(MT7996_PHY_WFCOMM_70F4(0), 0x44426664u)	/* 108 */ \
+	X(MT7996_PHY_WFCOMM_7674(0), 0x000014dbu)	/* 109 */ \
+	X(MT7996_PHY_WFCOMM_7678(0), 0x0000072du)	/* 110 */ \
+	X(MT7996_PHY_WFCOMM_7670(0), 0x0000000fu)	/* 111 */ \
+	X(MT7996_PHY_WFCOMM_706C(0), 0x90011104u)	/* 112 */ \
+	X(MT7996_PHY_WFCOMM_72AC(0), 0x80080000u)	/* 113 */ \
+	X(MT7996_PHY_WFCOMM_7504(0), 0x43000797u)	/* 114 */ \
+	X(MT7996_PHY_WFCOMM_7618(0), 0x33456777u)	/* 115 */ \
+	X(MT7996_PHY_WFCOMM_767C(0), 0x14120e0bu)	/* 116 */ \
+	X(MT7996_PHY_WFCOMM_7680(0), 0x231e1c18u)	/* 117 */ \
+	X(MT7996_PHY_WFCOMM_768C(0), 0x14120e0bu)	/* 118 */ \
+	X(MT7996_PHY_WFCOMM_7690(0), 0x2a1e1c18u)	/* 119 */ \
+	X(MT7996_PHY_WFCOMM_7694(0), 0x2b2a2a2au)	/* 120 */ \
+	X(MT7996_PHY_WFCOMM_7778(0), 0x0b2f02c0u)	/* 121 */ \
+	X(MT7996_PHY_WFCOMM_777C(0), 0x1e61448fu)	/* 122 */ \
+	X(MT7996_PHY_WFCOMM_7474(0), 0x00005f44u)	/* 123 */ \
+	X(MT7996_PHY_WFCOMM_604C(0), 0x03220333u)	/* 124 */ \
+	X(MT7996_PHY_BN_007C(0), 0x0003e854u)	/* 125 */ \
+	X(MT7996_PHY_DFE_F100(0), 0x000001e1u)	/* 126 */ \
+	X(MT7996_PHY_WFCOMM_6024(0), 0x20202020u)	/* 127 */ \
+	X(MT7996_PHY_WFCOMM_7608(0), 0x01f412b5u)	/* 128 */ \
+	X(MT7996_PHY_BN_83C4(0), 0x100f1313u)	/* 129 */ \
+	X(MT7996_PHY_BN_84C0(0), 0x0000312bu)	/* 130 */ \
+	X(MT7996_PHY_BN_84A4(0), 0x0000312bu)	/* 131 */ \
+	X(MT7996_PHY_BN_84A0(0), 0x312b2f29u)	/* 132 */ \
+	X(MT7996_PHY_CSD_1E4(0, 0), 0x0c0c3cfau)	/* 133 */ \
+	X(MT7996_PHY_CSD_1E8(0, 0), 0x0c0c3cfau)	/* 134 */ \
+	X(MT7996_PHY_CSD_1E4(0, 1), 0x0c0c3cfau)	/* 135 */ \
+	X(MT7996_PHY_CSD_1E8(0, 1), 0x0c0c3cfau)	/* 136 */ \
+	X(MT7996_PHY_CSD_1E4(0, 2), 0x0c0c3cfau)	/* 137 */ \
+	X(MT7996_PHY_CSD_1E8(0, 2), 0x0c0c3cfau)	/* 138 */ \
+	X(MT7996_PHY_CSD_1E4(0, 3), 0x0c0c3cfau)	/* 139 */ \
+	X(MT7996_PHY_CSD_1E8(0, 3), 0x0c0c3cfau)	/* 140 */ \
+	X(MT7996_PHY_CSD_1E4(0, 4), 0x0c0c3cfau)	/* 141 */ \
+	X(MT7996_PHY_CSD_1E8(0, 4), 0x0c0c3cfau)	/* 142 */ \
+	X(MT7996_PHY_CSD_280(0, 0), 0x00000005u)	/* 143 */ \
+	X(MT7996_PHY_CSD_280(0, 1), 0x00000005u)	/* 144 */ \
+	X(MT7996_PHY_CSD_280(0, 2), 0x00000005u)	/* 145 */ \
+	X(MT7996_PHY_CSD_280(0, 3), 0x00000005u)	/* 146 */ \
+	X(MT7996_PHY_CSD_280(0, 4), 0x00000005u)	/* 147 */ \
+	X(MT7996_PHY_CSD_250(0, 0), 0xc000f60au)	/* 148 */ \
+	X(MT7996_PHY_CSD_250(0, 1), 0xc000f60au)	/* 149 */ \
+	X(MT7996_PHY_CSD_250(0, 2), 0xc000f60au)	/* 150 */ \
+	X(MT7996_PHY_CSD_250(0, 3), 0xc000f60au)	/* 151 */ \
+	X(MT7996_PHY_CSD_250(0, 4), 0xc000f60au)	/* 152 */ \
+	X(MT7996_PHY_BN_89A0(0), 0x06016064u)	/* 153 */ \
+	X(MT7996_PHY_WFCOMM_7068(0), 0x66646664u)	/* 154 */ \
+	X(MT7996_PHY_BN_60B4(0), 0x66640060u)	/* 155 */ \
+	X(MT7996_PHY_BN_60BC(0), 0x1bdb4d00u)	/* 156 */ \
+	X(MT7996_PHY_WFCOMM_7134(0), 0x00050505u)	/* 157 */ \
+	X(MT7996_PHY_WFCOMM_7858(0), 0x00000f36u)	/* 158 */ \
+	X(MT7996_PHY_WFCOMM_7798(0), 0x02250226u)	/* 159 */ \
+	X(MT7996_PHY_WFCOMM_77B0(0), 0x1fc7f060u)	/* 160 */ \
+	X(MT7996_PHY_WFCOMM_77B4(0), 0x000001fcu)	/* 161 */ \
+	X(MT7996_PHY_WFCOMM_77B8(0), 0x00802008u)	/* 162 */ \
+	X(MT7996_PHY_WFCOMM_77A4(0), 0x0003c03cu)	/* 163 */ \
+	X(MT7996_PHY_WFCOMM_77A8(0), 0x0004803cu)	/* 164 */ \
+	X(MT7996_PHY_WFCOMM_77AC(0), 0x00060060u)	/* 165 */ \
+	X(MT7996_PHY_BN_6104(0), 0x00400040u)	/* 166 */ \
+	X(MT7996_PHY_WFCOMM_71B4(0), 0x00000000u)	/* 167 */ \
+	X(MT7996_PHY_WFCOMM_71AC(0), 0x00482000u)	/* 168 */ \
+	X(MT7996_PHY_WFCOMM_76A4(0), 0x2b2a2824u)	/* 169 */ \
+	X(MT7996_PHY_WFCOMM_76B4(0), 0x2b2a2824u)	/* 170 */ \
+	X(MT7996_PHY_BN_89B0(0), 0x20000000u)	/* 171 */ \
+	X(MT7996_PHY_WFCOMM_D214(0), 0x000000e1u)	/* 172 */ \
+	X(MT7996_PHY_DFE_F094(0), 0x00055555u)	/* 173 */ \
+	X(MT7996_PHY_DFE_F090(0), 0x00000155u)	/* 174 */ \
+	X(MT7996_PHY_BN_84F0(0), 0x324a175bu)	/* 175 */ \
+	X(MT7996_PHY_WFCOMM_F038(0), 0x06060600u)	/* 176 */ \
+	X(MT7996_PHY_WFCOMM_F03C(0), 0x00000606u)	/* 177 */ \
+	X(MT7996_PHY_WFCOMM_F044(0), 0x00000006u)	/* 178 */ \
+	X(MT7996_PHY_WFCOMM_725C(0), 0x91450200u)	/* 179 */ \
+	X(MT7996_PHY_BN_60F8(0), 0x00080008u)	/* 180 */ \
+	X(MT7996_PHY_BN_60FC(0), 0x00100010u)	/* 181 */ \
+	X(MT7996_PHY_DFE_F194(0), 0x07043a43u)	/* 182 */ \
+	X(MT7996_PHY_DFE_F198(0), 0x07043a43u)	/* 183 */ \
+	X(MT7996_PHY_DFE_F19C(0), 0x07043a43u)	/* 184 */ \
+	X(MT7996_PHY_DFE_F200(0), 0x07043a43u)	/* 185 */ \
+	X(MT7996_PHY_DFE_F204(0), 0x07043a43u)	/* 186 */ \
+	X(MT7996_PHY_DFE_F208(0), 0x06053481u)	/* 187 */ \
+	X(MT7996_PHY_DFE_F20C(0), 0x06053481u)	/* 188 */ \
+	X(MT7996_PHY_DFE_F210(0), 0x06053481u)	/* 189 */ \
+	X(MT7996_PHY_DFE_F214(0), 0x06053481u)	/* 190 */ \
+	X(MT7996_PHY_DFE_F218(0), 0x06053481u)	/* 191 */ \
+	X(MT7996_PHY_DFE_F21C(0), 0x065438c9u)	/* 192 */ \
+	X(MT7996_PHY_DFE_F220(0), 0x065438c9u)	/* 193 */ \
+	X(MT7996_PHY_DFE_F224(0), 0x065438c9u)	/* 194 */ \
+	X(MT7996_PHY_DFE_F228(0), 0x065438c9u)	/* 195 */ \
+	X(MT7996_PHY_DFE_F22C(0), 0x065438c9u)	/* 196 */ \
+	X(MT7996_PHY_DFE_F230(0), 0x06643769u)	/* 197 */ \
+	X(MT7996_PHY_DFE_F234(0), 0x06643769u)	/* 198 */ \
+	X(MT7996_PHY_DFE_F238(0), 0x06643769u)	/* 199 */ \
+	X(MT7996_PHY_DFE_F23C(0), 0x06643769u)	/* 200 */ \
+	X(MT7996_PHY_DFE_F240(0), 0x06643769u)	/* 201 */ \
+	X(MT7996_PHY_BN_8D90(0), 0x03f803f6u)	/* 202 */ \
+	X(MT7996_PHY_BN_8D94(0), 0x03f60000u)	/* 203 */ \
+	X(MT7996_PHY_BN_8D98(0), 0x03e703e3u)	/* 204 */ \
+	X(MT7996_PHY_BN_8D9C(0), 0x03e30000u)	/* 205 */ \
+	X(MT7996_PHY_BN_8DA0(0), 0x03c503bcu)	/* 206 */ \
+	X(MT7996_PHY_BN_8DA4(0), 0x03bc0000u)	/* 207 */ \
+	X(MT7996_PHY_BN_8DA8(0), 0x03880378u)	/* 208 */ \
+	X(MT7996_PHY_BN_8DAC(0), 0x03780000u)	/* 209 */ \
+	X(MT7996_PHY_BN_8DB0(0), 0x030202e2u)	/* 210 */ \
+	X(MT7996_PHY_BN_8DB4(0), 0x02e20000u)	/* 211 */ \
+	X(MT7996_PHY_WFCOMM_6118(0), 0x28c00c20u)	/* 212 */ \
+	X(MT7996_PHY_WFCOMM_782C(0), 0x30033337u)	/* 213 */ \
+	X(MT7996_PHY_WFCOMM_7830(0), 0x4b500333u)	/* 214 */ \
+	X(MT7996_PHY_CSD_198(0, 0), 0xde021e05u)	/* 215 */ \
+	X(MT7996_PHY_CSD_198(0, 1), 0xde021e05u)	/* 216 */ \
+	X(MT7996_PHY_CSD_198(0, 2), 0xde021e05u)	/* 217 */ \
+	X(MT7996_PHY_CSD_198(0, 3), 0xde021e05u)	/* 218 */ \
+	X(MT7996_PHY_CSD_198(0, 4), 0xde021e05u)	/* 219 */ \
+	X(MT7996_PHY_BN_8264(0), 0x00000000u)	/* 220 */ \
+	X(MT7996_PHY_BN_8268(0), 0x00c6013eu)	/* 221 */ \
+	X(MT7996_PHY_BN_826C(0), 0x00c6013eu)	/* 222 */ \
+	X(MT7996_PHY_DFE_F088(0), 0x03885e00u)	/* 223 */ \
+	X(MT7996_PHY_WFCOMM_7848(0), 0x02222103u)	/* 224 */ \
+	X(MT7996_PHY_WFCOMM_784C(0), 0x00222221u)	/* 225 */ \
+	X(MT7996_PHY_WFCOMM_7A84(0), 0x53433323u)	/* 226 */ \
+	X(MT7996_PHY_WFCOMM_7AA4(0), 0x1a383332u)	/* 227 */ \
+	X(MT7996_PHY_WFCOMM_7AA8(0), 0x00000021u)	/* 228 */ \
+	X(MT7996_PHY_BN_5A14(0), 0x00000000u)	/* 229 */ \
+	X(MT7996_PHY_BN_5A18(0), 0x00000000u)	/* 230 */ \
+	X(MT7996_PHY_BN_5A1C(0), 0x00000000u)	/* 231 */ \
+	X(MT7996_PHY_BN_5A20(0), 0x00000000u)	/* 232 */ \
+	X(MT7996_PHY_BN_5A24(0), 0x00000707u)	/* 233 */ \
+	X(MT7996_PHY_BN_5A28(0), 0x07070707u)	/* 234 */ \
+	X(MT7996_PHY_BN_5A2C(0), 0x07070707u)	/* 235 */ \
+	X(MT7996_PHY_BN_5A30(0), 0x07070707u)	/* 236 */ \
+	X(MT7996_PHY_BN_5A34(0), 0x00000e0eu)	/* 237 */ \
+	X(MT7996_PHY_BN_5A38(0), 0x0e0e0e0eu)	/* 238 */ \
+	X(MT7996_PHY_BN_5A3C(0), 0x0e0e0e0eu)	/* 239 */ \
+	X(MT7996_PHY_BN_5A40(0), 0x0e0e0e0eu)	/* 240 */ \
+	X(MT7996_PHY_BN_5A44(0), 0x00000e0eu)	/* 241 */ \
+	X(MT7996_PHY_BN_5A48(0), 0x0e0e0e0eu)	/* 242 */ \
+	X(MT7996_PHY_BN_5A4C(0), 0x0e0e0e0eu)	/* 243 */ \
+	X(MT7996_PHY_BN_5A50(0), 0x0e0e0e0eu)	/* 244 */ \
+	X(MT7996_PHY_BN_5AAC(0), 0x05030000u)	/* 245 */ \
+	X(MT7996_PHY_BN_5A00(0), 0x00020701u)	/* 246 */ \
+	X(MT7996_PHY_BN_64A8(0), 0x1c000000u)	/* 247 */ \
+	X(MT7996_PHY_WFCOMM_70C4(0), 0x04240000u)	/* 248 */ \
+	X(MT7996_PHY_WFCOMM_7B28(0), 0x000000e0u)	/* 249 */ \
+	X(MT7996_PHY_CHAIN_E048(0, 0), 0x40000008u)	/* 250 */ \
+	X(MT7996_PHY_CHAIN_E048(0, 1), 0x40000008u)	/* 251 */ \
+	X(MT7996_PHY_CHAIN_E048(0, 2), 0x40000008u)	/* 252 */ \
+	X(MT7996_PHY_CHAIN_E048(0, 3), 0x40000008u)	/* 253 */ \
+	X(MT7996_PHY_CHAIN_E048(0, 4), 0x40000008u)	/* 254 */ \
+	X(MT7996_PHY_WFCOMM_7B8C(0), 0x092cc30cu)	/* 255 */ \
+	X(MT7996_PHY_RDD_2048(0), 0x001d4547u)	/* 256 */ \
+	X(MT7996_PHY_RDD_200C(0), 0xa42213deu)	/* 257 */ \
+	X(MT7996_PHY_RDD_2214(0), 0x000147ffu)	/* 258 */ \
+	X(MT7996_PHY_CHAIN_E144(0, 0), 0x0001057fu)	/* 259 */ \
+	X(MT7996_PHY_CHAIN_E144(0, 1), 0x0001057fu)	/* 260 */ \
+	X(MT7996_PHY_CHAIN_E144(0, 2), 0x0001057fu)	/* 261 */ \
+	X(MT7996_PHY_CHAIN_E144(0, 3), 0x0001057fu)	/* 262 */ \
+	X(MT7996_PHY_CHAIN_E144(0, 4), 0x0001057fu)	/* 263 */ \
+	X(MT7996_PHY_CHAIN_E140(0, 0), 0x7f7f7f7fu)	/* 264 */ \
+	X(MT7996_PHY_CHAIN_E140(0, 1), 0x7f7f7f7fu)	/* 265 */ \
+	X(MT7996_PHY_CHAIN_E140(0, 2), 0x7f7f7f7fu)	/* 266 */ \
+	X(MT7996_PHY_CHAIN_E140(0, 3), 0x7f7f7f7fu)	/* 267 */ \
+	X(MT7996_PHY_CHAIN_E140(0, 4), 0x7f7f7f7fu)	/* 268 */ \
+	X(MT7996_PHY_BN_8DC0(0), 0xb9c205b9u)	/* 269 */ \
+	X(MT7996_PHY_BN_8DC4(0), 0xc2000000u)	/* 270 */ \
+	X(MT7996_PHY_BN_8DC8(0), 0x00000000u)	/* 271 */ \
+	X(MT7996_PHY_WFCOMM_7A88(0), 0x0bf8e801u)	/* 272 */ \
+	X(MT7996_PHY_WFCOMM_7A8C(0), 0x524a3a1bu)	/* 273 */ \
+	X(MT7996_PHY_WFCOMM_7B44(0), 0x1b0bf8e8u)	/* 274 */ \
+	X(MT7996_PHY_BN_8C08(0), 0x0dc00400u)	/* 275 */ \
+	X(MT7996_PHY_BN_8C0C(0), 0x00c00400u)	/* 276 */ \
+	X(MT7996_PHY_BN_8C10(0), 0x00c00400u)	/* 277 */ \
+	X(MT7996_PHY_WFCOMM_7C4C(0), 0x00107040u)	/* 278 */ \
+	X(MT7996_PHY_RXTD12(0), 0x9000c2c2u)	/* 279 */ \
+	X(MT7996_PHY_BN_8238(0), 0x6920a8e0u)	/* 280 */ \
+	X(MT7996_PHY_WFCOMM_6020(0), 0xc000000au)	/* 281 */ \
+	X(MT7996_PHY_WFCOMM_6204(0), 0x00000008u)	/* 282 */ \
+	X(MT7996_PHY_BN_8244(0), 0x318fffffu)	/* 283 */ \
+	X(MT7996_PHY_BN_8248(0), 0x0ebcfe98u)	/* 284 */ \
+	X(MT7996_PHY_BN_83BC(0), 0x00001400u)	/* 285 */ \
+	X(MT7996_PHY_BN_RXTD_COEF(0, 0), 0x03fc03f4u)	/* 286 */ \
+	X(MT7996_PHY_BN_RXTD_COEF(0, 1), 0x03f40000u)	/* 287 */ \
+	X(MT7996_PHY_BN_RXTD_COEF(0, 2), 0x03b303a3u)	/* 288 */ \
+	X(MT7996_PHY_BN_RXTD_COEF(0, 3), 0x03a30000u)	/* 289 */ \
+	X(MT7996_PHY_BN_RXTD_COEF(0, 4), 0x03600340u)	/* 290 */ \
+	X(MT7996_PHY_BN_RXTD_COEF(0, 5), 0x03400000u)	/* 291 */ \
+	X(MT7996_PHY_BN_824C(0), 0x34db6db8u)	/* 292 */ \
+	X(MT7996_PHY_BN_8E08(0), 0x00294d34u)	/* 293 */ \
+	X(MT7996_PHY_WFCOMM_7C64(0), 0xbcb2a8a1u)	/* 294 */ \
+	X(MT7996_PHY_WFCOMM_7C68(0), 0x00084320u)	/* 295 */ \
+	X(MT7996_PHY_WFCOMM_7CE4(0), 0xa9a61d6bu)	/* 296 */ \
+	X(MT7996_PHY_WFCOMM_7CE8(0), 0xaca9a6acu)	/* 297 */ \
+	X(MT7996_PHY_WFCOMM_7BB8(0), 0x20820820u)	/* 298 */ \
+	X(MT7996_PHY_WFCOMM_7BBC(0), 0x0000c320u)	/* 299 */ \
+	X(MT7996_PHY_BN_8998(0), 0x06000204u)	/* 300 */ \
+	X(MT7996_PHY_WFCOMM_77D8(0), 0x01110801u)	/* 301 */ \
+	X(MT7996_PHY_WFCOMM_77DC(0), 0x1ff7fc04u)	/* 302 */ \
+	X(MT7996_PHY_WFCOMM_77E0(0), 0x000001ffu)	/* 303 */ \
+	X(MT7996_PHY_WFCOMM_7138(0), 0x80357001u)	/* 304 */ \
+	X(MT7996_PHY_BN_5AA8(0), 0x00000608u)	/* 305 */ \
+	X(MT7996_PHY_BN_8394(0), 0x002011ffu)	/* 306 */ \
+	X(MT7996_PHY_BN_8398(0), 0x002011ffu)	/* 307 */ \
+	X(MT7996_PHY_WFCOMM_7158(0), 0xca52fc00u)	/* 308 */ \
+	X(MT7996_PHY_WFCOMM_7258(0), 0x00000c47u)	/* 309 */ \
+	X(MT7996_PHY_WFCOMM_750C(0), 0x00027b04u)	/* 310 */ \
+	X(MT7996_PHY_WFCOMM_7CC4(0), 0x0001ff00u)	/* 311 */
+#define MT7996_PHY_INIT_REGTBL_ABS_N    312u
+
+#endif /* HW_MT7996_PHY_INIT_H */

@@ -1,0 +1,149 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] cmd: mtd: remove the write and erase subcommands
+
+In the dumper a write cannot be typed: remove `mtd write` and `mtd erase`
+and their help, delete do_mtd_erase(), and make do_mtd_io() refuse anything
+but a read.
+
+--- a/cmd/mtd.c
++++ b/cmd/mtd.c
+@@ -493,6 +493,11 @@
+ 
+ 	dump = !strncmp(cmd, "dump", 4);
+ 	read = dump || !strncmp(cmd, "read", 4);
++	if (!read) {
++		printf("This image cannot write: built without CMD_MTD_WRITE\n");
++		ret = CMD_RET_FAILURE;
++		goto out_put_mtd;
++	}
+ 	raw = strstr(cmd, ".raw");
+ 	woob = strstr(cmd, ".oob");
+ 	benchmark = strstr(cmd, ".benchmark");
+@@ -636,94 +641,6 @@
+ 	return ret;
+ }
+ 
+-static int do_mtd_erase(struct cmd_tbl *cmdtp, int flag, int argc,
+-			char *const argv[])
+-{
+-	struct erase_info erase_op = {};
+-	struct mtd_info *mtd;
+-	u64 off, len;
+-	bool scrub;
+-	int ret = 0;
+-
+-	if (argc < 2)
+-		return CMD_RET_USAGE;
+-
+-	mtd = get_mtd_by_name(argv[1]);
+-	if (IS_ERR_OR_NULL(mtd))
+-		return CMD_RET_FAILURE;
+-
+-	scrub = strstr(argv[0], ".dontskipbad");
+-
+-	argc -= 2;
+-	argv += 2;
+-
+-	off = argc > 0 ? hextoul(argv[0], NULL) : 0;
+-	len = argc > 1 ? hextoul(argv[1], NULL) : mtd->size;
+-
+-	if (!mtd_is_aligned_with_block_size(mtd, off)) {
+-		printf("Offset not aligned with a block (0x%x)\n",
+-		       mtd->erasesize);
+-		ret = CMD_RET_FAILURE;
+-		goto out_put_mtd;
+-	}
+-
+-	if (!mtd_is_aligned_with_block_size(mtd, len)) {
+-		printf("Size not a multiple of a block (0x%x)\n",
+-		       mtd->erasesize);
+-		ret = CMD_RET_FAILURE;
+-		goto out_put_mtd;
+-	}
+-
+-	printf("Erasing 0x%08llx ... 0x%08llx (%d eraseblock(s))\n",
+-	       off, off + len - 1, mtd_div_by_eb(len, mtd));
+-
+-	erase_op.mtd = mtd;
+-	erase_op.addr = off;
+-	erase_op.len = mtd->erasesize;
+-
+-	led_activity_blink();
+-
+-	while (len) {
+-		if (!scrub) {
+-			ret = mtd_block_isbad(mtd, erase_op.addr);
+-			if (ret < 0) {
+-				printf("Failed to get bad block at 0x%08llx\n",
+-				       erase_op.addr);
+-				ret = CMD_RET_FAILURE;
+-				goto out_put_mtd;
+-			}
+-
+-			if (ret > 0) {
+-				printf("Skipping bad block at 0x%08llx\n",
+-				       erase_op.addr);
+-				ret = 0;
+-				len -= mtd->erasesize;
+-				erase_op.addr += mtd->erasesize;
+-				continue;
+-			}
+-		}
+-
+-		ret = mtd_erase(mtd, &erase_op);
+-		if (ret && ret != -EIO)
+-			break;
+-
+-		len -= mtd->erasesize;
+-		erase_op.addr += mtd->erasesize;
+-	}
+-
+-	led_activity_off();
+-
+-	if (ret && ret != -EIO)
+-		ret = CMD_RET_FAILURE;
+-	else
+-		ret = CMD_RET_SUCCESS;
+-
+-out_put_mtd:
+-	put_mtd_device(mtd);
+-
+-	return ret;
+-}
+-
+ #ifdef CONFIG_CMD_MTD_MARKBAD
+ static int do_mtd_markbad(struct cmd_tbl *cmdtp, int flag, int argc,
+ 			  char *const argv[])
+@@ -1229,9 +1146,6 @@
+ 	"mtd list\n"
+ 	"mtd read[.raw][.oob][.dontskipbad][.benchmark]  <name> <addr> [<off> [<size>]]\n"
+ 	"mtd dump[.raw][.oob][.dontskipbad]              <name>        [<off> [<size>]]\n"
+-	"mtd write[.raw][.oob][.dontskipff][.dontskipbad][.benchmark]\n"
+-	"                                                <name> <addr> [<off> [<size>]]\n"
+-	"mtd erase[.dontskipbad]                         <name>        [<off> [<size>]]\n"
+ 	"\n"
+ 	"Specific functions:\n"
+ 	"mtd bad                                         <name>\n"
+@@ -1265,7 +1179,8 @@
+ 	"\t[u|f]: user or factory OTP region\n"
+ #endif
+ 	"\n"
+-	"The .dontskipff option forces writing empty pages, don't use it if unsure.\n"
++	"This image has no write or erase subcommand: it is built to read a device\n"
++	"before anything has been written to it.\n"
+ 	"The .dontskipbad option keeps bad blocks in place instead of skipping them,\n"
+ 	"so offsets in the result match the device. Use it for a preservation dump.\n");
+ 
+@@ -1279,12 +1194,8 @@
+ 		U_BOOT_SUBCMD_MKENT(list, 1, 1, do_mtd_list),
+ 		U_BOOT_SUBCMD_MKENT_COMPLETE(read, 5, 0, do_mtd_io,
+ 					     mtd_name_complete),
+-		U_BOOT_SUBCMD_MKENT_COMPLETE(write, 5, 0, do_mtd_io,
+-					     mtd_name_complete),
+ 		U_BOOT_SUBCMD_MKENT_COMPLETE(dump, 4, 0, do_mtd_io,
+ 					     mtd_name_complete),
+-		U_BOOT_SUBCMD_MKENT_COMPLETE(erase, 4, 0, do_mtd_erase,
+-					     mtd_name_complete),
+ #if CONFIG_IS_ENABLED(CMD_MTD_MARKBAD)
+ 		U_BOOT_SUBCMD_MKENT_COMPLETE(markbad, 20, 0, do_mtd_markbad,
+ 					     mtd_name_complete),

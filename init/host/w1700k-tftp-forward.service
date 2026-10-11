@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# Installed by init/host/tftp-forward; loads its UDP 69 redirect at boot.
+[Unit]
+Description=Redirect W1700K stock U-Boot TFTP to the unprivileged installer port
+After=network.target nftables.service
+ConditionPathExists=/etc/w1700k-tftp-forward.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/nft delete table ip w1700k_tftp
+ExecStart=/usr/sbin/nft -f /etc/w1700k-tftp-forward.nft
+ExecStop=-/usr/sbin/nft delete table ip w1700k_tftp
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_NETLINK
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

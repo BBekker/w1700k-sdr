@@ -1,0 +1,45 @@
+{
+  "buildroot": {
+    "git": "https://github.com/buildroot/buildroot.git",
+    "tag": "2026.08",
+    "commit": "d5180309b1b66ef3b8eaccca70ad69be8e0729a1"
+  },
+  "linux": {
+    "version": "6.18.52",
+    "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.52.tar.xz",
+    "sha256": "2b69564f7d4fea0c859b1959ba33709ee6e9139bd100e30a853b57159a8221b8"
+  },
+  "openwrt": {
+    "git": "https://github.com/openwrt/openwrt.git",
+    "commit": "220866c5cf36269c3099b955d7b0de3d080bcade",
+    "paths": [
+      "target/linux/generic/backport-6.18",
+      "target/linux/generic/pending-6.18",
+      "target/linux/generic/hack-6.18",
+      "target/linux/generic/files",
+      "target/linux/airoha/patches-6.18",
+      "target/linux/airoha/dts",
+      "package/firmware/rtl826x-firmware"
+    ]
+  },
+  "u-boot": {
+    "version": "2026.07",
+    "url": "https://ftp.denx.de/pub/u-boot/u-boot-2026.07.tar.bz2",
+    "sha256": "78e8bfc382fe388f9b55aa1daf8c563522a037779b5d4c349d1415e381f1243e"
+  },
+  "rtl8261n": {
+    "url": "https://raw.githubusercontent.com/balika011/realtek_phy_firmware/0cd4abe2b0bf197f75c27088f86a74c7ddb103b4/",
+    "files": {
+      "rtl8261n_rtl8264b.c": "c069e0423d893d9bc0c929b2a8ceb0b4549e82a4ef3c335a20b03ac6379e1a1b",
+      "phy_patch.c": "5db4e66c6de355a464a64eab745bdec0a1c8547174853b73d3c9abe6cfaa59f0",
+      "phy_patch.h": "5351860bbc3e588c4a1be76a9ecb4a08b658337900988af928f57ece00f0bdd8",
+      "conf_rtl8261n_c_lp.c": "884c46ee7b6426f5682e630de7324782265b4f9c390a6efe35665abd3a9b4cd8"
+    },
+    "openwrt_files": {
+      "src/conf_rtl8261n_c.c": "4107f4817df228198e8a62ea52fa11433e09ea674641c44fdcb58d32daee1989",
+      "src/conf_rtl8264b.c": "48cd13ef0fe8e586508744a90fcc8ad52b0541d36d09a27a31f8d1e79d98affa",
+      "patches/0001-Fix-endianness-when-building-on-big-endian-systems.patch": "d0345a8e9ea9726edc6a5da562fa0b4ad3c915192e82257dd8e067aad31ac7bb"
+    },
+    "output_sha256": "ae1963b2a84a17eaa2fb9052591bdb5152838feda045d7313f45a8608b918533"
+  }
+}

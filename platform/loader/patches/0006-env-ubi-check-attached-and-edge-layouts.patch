@@ -1,0 +1,108 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] env: ubi: accept an attached device and find both layout copies
+
+An attached, validated UBI device needs no second scan, but only if both
+environment volumes exist. UBI does not place its layout volume at either end
+of the partition, so on a cold boot scan the small headers forward and stop
+once both CRC-valid layout copies are found.
+
+--- a/env/ubi.c
++++ b/env/ubi.c
+@@ -38,7 +38,7 @@
+  * Loading an environment from an unformatted, non-empty partition makes UBI
+  * scan the whole device before it can reject the media.  On the W1700K this
+  * happens before the first prompt, while "dev" still contains the stock OS.
+- * Bound that first-boot decision to eight good eraseblocks.  EC headers alone
++ * Bound that first-boot decision to a read-only header scan.  EC headers alone
+  * are insufficient: an interrupted/empty attach can create them without the
+  * environment volumes and a later automatic attach may then erase application
+  * data it does not recognize.  Require both layout-volume copies to contain
+@@ -47,7 +47,7 @@
+  * This probe is deliberately load/save/erase admission only.  `ubi part dev`
+  * remains the explicit operation that formats an erased development partition.
+  */
+-#define ENV_UBI_PROBE_GOOD_PEBS 8
++#define ENV_UBI_PROBE_REPORT_PEBS 256
+ #define ENV_UBI_REQUIRED_LAYOUTS 2
+ 
+ static int env_ubi_read(struct mtd_info *mtd, loff_t from, void *buf, size_t len)
+@@ -73,19 +73,44 @@
+ 	return be32_to_cpu(record->crc) == crc;
+ }
+ 
++static int env_ubi_attached_ready(void)
++{
++	struct ubi_device *ubi = ubi_devices[0];
++	int primary = 0, redundant = 0, i;
++
++	if (!ubi || !ubi->mtd || strcmp(ubi->mtd->name, CONFIG_ENV_UBI_PART))
++		return 0;
++	for (i = 0; i < ubi->vtbl_slots; i++) {
++		struct ubi_volume *volume = ubi->volumes[i];
++
++		if (!volume)
++			continue;
++		if (volume->name_len == strlen(CONFIG_ENV_UBI_VOLUME) &&
++		    !memcmp(volume->name, CONFIG_ENV_UBI_VOLUME, volume->name_len))
++			primary = 1;
++		if (volume->name_len == strlen(CONFIG_ENV_UBI_VOLUME_REDUND) &&
++		    !memcmp(volume->name, CONFIG_ENV_UBI_VOLUME_REDUND, volume->name_len))
++			redundant = 1;
++	}
++	return primary && redundant;
++}
++
+ int env_ubi_media_ready(void)
+ {
+ 	struct mtd_info *mtd;
+ 	struct ubi_ec_hdr ec;
+ 	struct ubi_vid_hdr vid;
+ 	u8 *page = NULL;
+-	unsigned int checked = 0, layouts = 0;
++	u64 total_pebs;
++	unsigned int probe, layouts = 0;
+ 	loff_t offset;
+ 	int ret;
+ 
+ 	ret = mtd_probe_devices();
+ 	if (ret)
+ 		return ret;
++	if (env_ubi_attached_ready())
++		return 1;
+ 	mtd = get_mtd_device_nm(CONFIG_ENV_UBI_PART);
+ 	if (IS_ERR(mtd))
+ 		return PTR_ERR(mtd);
+@@ -95,17 +120,21 @@
+ 		goto out;
+ 	}
+ 
+-	for (offset = 0; offset < mtd->size &&
+-	     checked < ENV_UBI_PROBE_GOOD_PEBS; offset += mtd->erasesize) {
++	total_pebs = mtd->size / mtd->erasesize;
++	for (probe = 0; probe < total_pebs; probe++) {
+ 		struct ubi_vtbl_record *records = (struct ubi_vtbl_record *)page;
+ 		u32 crc, vid_offset, data_offset;
+ 
++		if (!(probe % ENV_UBI_PROBE_REPORT_PEBS))
++			printf("Checking UBI environment media: PEB %u/%llu\n",
++			       probe, (unsigned long long)total_pebs);
++		offset = (loff_t)probe * mtd->erasesize;
++
+ 		ret = mtd_block_isbad(mtd, offset);
+ 		if (ret < 0)
+ 			goto out;
+ 		if (ret)
+ 			continue;
+-		checked++;
+ 		ret = env_ubi_read(mtd, offset, &ec, sizeof(ec));
+ 		if (ret)
+ 			goto out;
+@@ -151,7 +179,7 @@
+ 	if (ret > 0)
+ 		return 0;
+ 	if (!ret) {
+-		printf("\n** No bounded UBI signature in %s; refusing environment %s **\n",
++		printf("\n** No bounded UBI environment records in %s; refusing environment %s **\n",
+ 		       CONFIG_ENV_UBI_PART, operation);
+ 		return -ENOMSG;
+ 	}

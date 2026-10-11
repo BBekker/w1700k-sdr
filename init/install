@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Back up a unit running stock firmware and install the SDR system on it.
+
+Connect the unit's console (115200 8N1) and its lan3 port to this host, then run
+this and power the unit on when asked. See init/README.md.
+"""
+import argparse
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from initkit import config, install, session          # noqa: E402
+from initkit.console import StepFailed                # noqa: E402
+from initkit.provision import ProvisionError          # noqa: E402
+
+
+def main():
+    settings = config.load()
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    config.add_arguments(parser, settings)
+    parser.add_argument('--expect-serial', metavar='SERIAL',
+                        help='stop before writing anything unless the unit has this serial')
+    parser.add_argument('--authorized-key', metavar='FILE',
+                        default=settings['authorized_key'],
+                        help='SSH public key for root logins (default: ~/.ssh/id_ed25519.pub, '
+                             'id_ecdsa.pub or id_rsa.pub)')
+    parser.add_argument('--import-host-key', metavar='FILE',
+                        help="use this SSH host key for the unit instead of making one "
+                             "(OpenSSH or Dropbear Ed25519 private key)")
+    parser.add_argument('--backup-only', action='store_true',
+                        help='stop after the backup; nothing is written to the unit')
+    parser.add_argument('--force', action='store_true',
+                        help='install even though stock already boots our loader')
+    args = parser.parse_args()
+    try:
+        return install.run(session.settings_from(args), args.expect_serial,
+                           args.authorized_key, args.import_host_key, args.force,
+                           args.backup_only)
+    except (StepFailed, ProvisionError, RuntimeError) as error:
+        sys.exit(f'install: {error}')
+    except KeyboardInterrupt:
+        sys.exit('install: interrupted')
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,45 @@
+SPDX-License-Identifier: GPL-2.0-only
+Subject: [PATCH] mtd: spinand: stop if command completion is unknown
+
+A timeout or a failed status read does not prove the array is idle, so do
+not let recovery I/O issue cache or program commands while the previous one
+may still run: reset or halt instead. Completed program and erase failures
+still return -EIO to the BMT layer.
+
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -14,6 +14,7 @@
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/mtd/spinand.h>
++#include <linux/panic.h>
+ #include <linux/of.h>
+ #include <linux/slab.h>
+ #include <linux/string.h>
+@@ -559,7 +560,7 @@
+ 				  poll_delay_us,
+ 				  SPINAND_WAITRDY_TIMEOUT_MS);
+ 	if (ret)
+-		return ret;
++		panic("SPI NAND completion unknown (%d); reset required", ret);
+ 
+ 	status = *spinand->scratchbuf;
+ 	if (!(status & STATUS_BUSY))
+@@ -571,13 +572,15 @@
+ 	 */
+ 	ret = spinand_read_status(spinand, &status);
+ 	if (ret)
+-		return ret;
++		panic("SPI NAND completion unknown (%d); reset required", ret);
+ 
+ out:
+ 	if (s)
+ 		*s = status;
+ 
+-	return status & STATUS_BUSY ? -ETIMEDOUT : 0;
++	if (status & STATUS_BUSY)
++		panic("SPI NAND still busy; reset required");
++	return 0;
+ }
+ 
+ static int spinand_read_id_op(struct spinand_device *spinand, u8 naddr,

@@ -1,0 +1,14 @@
+# Build outputs, downloads and prepared sources (platform/build/, firmware/build/, ...).
+**/build/
+__pycache__/
+*.py[cod]
+**/.venv*/
+/.vscode/
+
+# Per-unit data never belongs in the repository: NAND backups, calibration,
+# keys and captures live under ~/.local/share/w1700k/ (see init/README.md).
+*.pem
+*.key
+nand-raw.bin
+eeprom.bin
+/captures/

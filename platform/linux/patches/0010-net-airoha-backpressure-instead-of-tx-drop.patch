@@ -1,0 +1,37 @@
+SPDX-License-Identifier: GPL-2.0-only
+Subject: [PATCH] net: airoha: backpressure instead of TX drop; three QDMA reads in flight
+
+The IQ export sends one stream at 10 GbE line rate from DRAM that the radio
+is writing at 1.28 GB/s.
+
+- With TXQ_CNGST_DROP_EN set, the QDMA silently drops frames once a TX queue
+  is congested. Cleared, the ring fills and the queue stops instead, and
+  every frame reaches the wire.
+- MAX_ISSUE_NUM 2 limits the export to about 1.14 GB/s under that DRAM load;
+  3, the field's maximum, reaches about 1.22 GB/s, line rate for 8 KiB frames.
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1619,7 +1619,7 @@
+ 		       GLOBAL_CFG_MULTICAST_EN_MASK |
+ 		       GLOBAL_CFG_IRQ0_EN_MASK | GLOBAL_CFG_IRQ1_EN_MASK |
+ 		       GLOBAL_CFG_TX_WB_DONE_MASK |
+-		       FIELD_PREP(GLOBAL_CFG_MAX_ISSUE_NUM_MASK, 2));
++		       FIELD_PREP(GLOBAL_CFG_MAX_ISSUE_NUM_MASK, 3));
+ 
+ 	airoha_qdma_init_qos(qdma);
+ 
+@@ -1632,8 +1632,11 @@
+ 				  RX_DELAY_INT_MASK);
+ 	}
+ 
+-	airoha_qdma_set(qdma, REG_TXQ_CNGST_CFG,
+-			TXQ_CNGST_DROP_EN | TXQ_CNGST_DEI_DROP_EN);
++	/* A congested TX queue holds its descriptors, so the ring fills and the
++	 * stack sees a stopped queue, instead of the QDMA dropping silently.
++	 */
++	airoha_qdma_clear(qdma, REG_TXQ_CNGST_CFG,
++			  TXQ_CNGST_DROP_EN | TXQ_CNGST_DEI_DROP_EN);
+ 	airoha_qdma_init_qos_stats(qdma);
+ 
+ 	return 0;

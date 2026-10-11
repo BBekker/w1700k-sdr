@@ -1,0 +1,24 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] spi: airoha-snfi: report an NFI init failure
+
+The controller probe ends in `return airoha_snand_nfi_init(priv)` with no
+diagnostic, and the MTD probe loop discards the error, so a failed init shows
+only as "No MTD device found". Print the error and the register base.
+
+--- a/drivers/spi/airoha_snfi_spi.c
++++ b/drivers/spi/airoha_snfi_spi.c
+@@ -1073,7 +1073,13 @@
+ 		}
+ 	}
+ 
+-	return airoha_snand_nfi_init(priv);
++	ret = airoha_snand_nfi_init(priv);
++	if (ret)
++		dev_err(dev, "nfi init failed (%d); ctrl range %p, nfi range %p\n",
++			ret, regmap_get_range(priv->regmap_ctrl, 0),
++			regmap_get_range(priv->regmap_nfi, 0));
++
++	return ret;
+ }
+ 
+ static int airoha_snand_nfi_set_speed(struct udevice *bus, uint speed)

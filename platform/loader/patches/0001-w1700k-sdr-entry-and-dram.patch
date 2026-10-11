@@ -1,0 +1,84 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] arm: airoha: add the W1700K SDR board
+
+A board option for the W1700K: an ARM64 Linux image header so stock U-Boot
+can boot U-Boot as a FIT "kernel" at 0x80200000, and one 2 GiB DRAM bank.
+
+--- a/arch/arm/mach-airoha/Kconfig
++++ b/arch/arm/mach-airoha/Kconfig
+@@ -31,6 +31,14 @@
+ 
+ endchoice
+ 
++config AN7581_W1700K_SDR
++	bool "W1700K SDR loader (2 GiB)"
++	depends on TARGET_AN7581
++	select LINUX_KERNEL_IMAGE_HEADER
++
++config LNX_KRNL_IMG_TEXT_OFFSET_BASE
++	default 0x80200000 if AN7581_W1700K_SDR
++
+ config SYS_SOC
+ 	default "en7523" if TARGET_EN7523
+ 	default "an7581" if TARGET_AN7581
+--- a/arch/arm/mach-airoha/an7581/init.c
++++ b/arch/arm/mach-airoha/an7581/init.c
+@@ -3,6 +3,7 @@
+ #include <fdtdec.h>
+ #include <init.h>
+ #include <linux/sizes.h>
++#include <linux/errno.h>
+ #include <sysreset.h>
+ #include <asm/armv8/mmu.h>
+ #include <asm/global_data.h>
+@@ -18,7 +19,15 @@
+ 
+ int dram_init(void)
+ {
+-	return fdtdec_setup_mem_size_base();
++	int ret = fdtdec_setup_mem_size_base();
++
++	if (ret)
++		return ret;
++	/* This profile owns one exact bank. Never index a second bank slot. */
++	if (IS_ENABLED(CONFIG_AN7581_W1700K_SDR) &&
++	    (gd->ram_base != 0x80000000UL || gd->ram_size != SZ_2G))
++		return -EINVAL;
++	return 0;
+ }
+ 
+ int dram_init_banksize(void)
+@@ -26,11 +35,13 @@
+ 	gd->bd->bi_dram[0].start = gd->ram_base;
+ 	gd->bd->bi_dram[0].size = get_effective_memsize();
+ 
++#if !defined(CONFIG_AN7581_W1700K_SDR)
+ 	if (gd->ram_size > SZ_2G) {
+ 		gd->bd->bi_dram[1].start = gd->ram_base + SZ_2G;
+ 		gd->bd->bi_dram[1].size = gd->ram_size - SZ_2G;
+ 	}
+ 
++#endif
+ 	return 0;
+ }
+ 
+@@ -46,13 +57,17 @@
+ 		.phys = 0x80000000UL,
+ 		.size = SZ_2G,
+ 		.attrs = PTE_BLOCK_MEMTYPE(MT_NORMAL) | PTE_BLOCK_OUTER_SHARE,
+-	}, {
++	},
++#if !defined(CONFIG_AN7581_W1700K_SDR)
++	{
+ 		/* DDR, 64-bit area */
+ 		.virt = 0x100000000UL,
+ 		.phys = 0x100000000UL,
+ 		.size = SZ_4G + SZ_2G,
+ 		.attrs = PTE_BLOCK_MEMTYPE(MT_NORMAL) | PTE_BLOCK_OUTER_SHARE,
+-	}, {
++	},
++#endif
++	{
+ 		.virt = 0x00000000UL,
+ 		.phys = 0x00000000UL,
+ 		.size = 0x40000000UL,

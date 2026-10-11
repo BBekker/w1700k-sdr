@@ -1,0 +1,41 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Give a host interface the address (and MTU) used on one of the unit's links.
+#
+#   sudo init/host/link up IFACE [CIDR [MTU]]     # default 192.168.1.10/24, MTU unchanged
+#   sudo init/host/link down IFACE [CIDR]
+#
+# The management link (unit lan3) uses 192.168.1.10/24; the 10 GbE IQ link (unit
+# eth1) uses 10.77.0.10/24 with MTU 9216. Only the named address is added or
+# removed; routes and other addresses are left alone.
+#
+# Given an MTU (the IQ link), the receive ring is also raised to the NIC's
+# maximum: the stream is about 150,000 datagrams/s, so a default 512-entry ring
+# holds 3.4 ms, and a host stall longer than that (a parallel build, say) drops
+# slices before any socket sees them.
+set -eu
+[ "$(id -u)" = 0 ] || { echo "$0: run as root (sudo)" >&2; exit 1; }
+[ $# -ge 2 ] || { echo "usage: $0 up|down IFACE [CIDR [MTU]]" >&2; exit 2; }
+action=$1 iface=$2 cidr=${3:-192.168.1.10/24} mtu=${4:-}
+case "$action" in
+up)
+	[ -z "$mtu" ] || ip link set dev "$iface" mtu "$mtu"
+	if [ -n "$mtu" ] && command -v ethtool >/dev/null; then
+		rx=$(ethtool -g "$iface" 2>/dev/null | awk '/^RX:/ { print $2; exit }')
+		[ -z "$rx" ] || ethtool -G "$iface" rx "$rx" 2>/dev/null ||
+			echo "$0: could not raise the $iface receive ring" >&2
+	fi
+	ip link set dev "$iface" up
+	ip -4 -o address show dev "$iface" | grep -q " ${cidr%/*}/" ||
+		ip address add "$cidr" dev "$iface"
+	;;
+down)
+	! ip -4 -o address show dev "$iface" | grep -q " ${cidr%/*}/" ||
+		ip address del "$cidr" dev "$iface"
+	;;
+*)
+	echo "usage: $0 up|down IFACE [CIDR [MTU]]" >&2
+	exit 2
+	;;
+esac
+ip -brief address show dev "$iface"

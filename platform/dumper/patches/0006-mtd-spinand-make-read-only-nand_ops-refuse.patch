@@ -1,0 +1,44 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] mtd: spinand: keep read-only erase and markbad entries as refusals
+
+nanddev_init() rejects an ops vector without erase, markbad and isbad, so
+leaving the read-only build's entries out left no chip at all. Keep both
+entries as stubs that return -EROFS; the real implementations stay
+uncompiled.
+
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -1235,8 +1235,32 @@
+ 	return 0;
+ }
+ 
++#if IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
++/*
++ * nanddev_init() refuses a nand_ops that is missing any of erase, markbad and
++ * isbad, so leaving the two entries out stopped the chip from probing at all
++ * rather than making it read-only. These refuse instead. They contain no write
++ * code and the real implementations are still not built, so the image's
++ * absence assertions are unaffected.
++ */
++static int spinand_erase_refused(struct nand_device *nand,
++				 const struct nand_pos *pos)
++{
++	return -EROFS;
++}
++
++static int spinand_markbad_refused(struct nand_device *nand,
++				   const struct nand_pos *pos)
++{
++	return -EROFS;
++}
++#endif
++
+ static const struct nand_ops spinand_ops = {
+-#if !IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
++#if IS_ENABLED(CONFIG_MTD_SPI_NAND_READ_ONLY)
++	.erase = spinand_erase_refused,
++	.markbad = spinand_markbad_refused,
++#else
+ 	.erase = spinand_erase,
+ 	.markbad = spinand_markbad,
+ #endif

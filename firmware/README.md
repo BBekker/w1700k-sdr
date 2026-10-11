@@ -1,0 +1,124 @@
+# MT7996 firmware
+
+Our firmware for the MT7996: a ROM patch, a WM image and a WA image, built from this directory
+with no MediaTek file. `make -C firmware` writes them to `firmware/build/`:
+
+| file | role | what it is |
+|---|---|---|
+| `w1700k_rom_patch.bin` | patch | only our three ROM hooks, no MediaTek body (`rom_patch/`) |
+| `w1700k_wm.bin` | wm | our WM: the radio bring-up and band set-up, the stream producer, RF control (`wm/`, `radio/`, `stream/`) |
+| `w1700k_wa.bin` | wa | our WA: the stream packer (`wa/`, `stream/`) |
+| `firmware.json` | | role, file, size, sha256 and download flags of each, in download order |
+
+Requirements: Python 3.10+, `clang` with the RISC-V target, `ld.lld`, `llvm-objcopy`,
+`llvm-readobj`, `openssl` (AES for the container regions).
+
+The MT7996's three processor types (WM, WA, DSP) are RISC-V (Andes). The ROM authenticates
+neither the patch's hook table nor, behind our CRC hook, the RAM images, so our code runs from
+the patch onward. No DSP image is loaded.
+
+## ROM patch (`rom_patch/`)
+
+The patch holds a 64-entry hardware instruction-redirect table; our container
+(`patch.py` `build_own`) is an empty table and a blank security footer to which three hooks are
+added. Each replacement runs our code, then a copy of the hooked instruction, then jumps back
+into ROM after it; the build refuses an object with relocations and re-decodes its output.
+
+- `hook-pdacrc-result.S` at ROM `0x008264e4`: makes `halWfdmaPdaCheckCRC` report a match, so
+  our RAM containers load. The PDA idle, length and valid-bit checks still refuse a download
+  that did not land.
+- `hook.S` at ROM `0x00822b94`: repartitions the UMAC SYSRAM pool to ICAP 512 / PLE 64 / PSE
+  128 banks with ICAP at position 0, so the capture engine owns pool bytes 0..1 MiB (MCU
+  `0xe0400000`..`0xe04fffff`). Our WM's bring-up makes the ROM call it hooks.
+- `hook-start-mask.S` at ROM `0x00838d6c`: the ROM starts no core until the WM, the WA and the
+  DSP have each had a FW_START; the hook counts the DSP as started, so no DSP image is needed.
+
+None of MediaTek's 26 ROM redirects is in it, and none of the eFuse "recovery" their 2025 and
+later patches run. It loads on parts with unprovisioned security fuses.
+
+## The WM (`wm/`, `radio/`)
+
+- `wm/start.S`: entry from FW_START at `0x00916400`; records the core as the ROM handed it
+  over, installs a trap handler (a faulting load or store is recorded and skipped, anything else
+  parks the core) and sets its stack.
+- `wm/wm.c`: drops the D-cache and invalidates the I-cache (the ROM leaves lines valid over
+  CRAM, where our download then writes the radio code), takes the ROM's gp, sets both CPUs to
+  720 MHz, sends the FW_START reply the ROM leaves to the started firmware, masks every
+  interrupt source and publishes its status block at `0x0090f300` (`wm/wm.h`). Its main loop
+  serves radio commands and runs the control interpreter (`stream/ctl.h`).
+- **Radio commands** (`radio/radio_cmd.h`), posted by the host in the status block and
+  acknowledged there with a result, the first hardware failure and the time taken:
+  `BRINGUP` (the radio from cold), `SETUP band lo bw` (the band at an LO in Hz and a bandwidth of
+  20, 40, 80 or 160 MHz, 40 to 320 Msps: everything MediaTek's channel set wrote, computed from
+  those, the synthesizer by TUNE's own program, then the RX DC-offset calibration; no channel
+  numbers, no 320 MHz class), `RATE band bw` (the bandwidth alone: no synthesizer, no DCOC, LO
+  and filter kept), `DCOC band` (the DC-offset calibration at the current LO and filter),
+  `CAPTURE band bw` (the capture path and the MAC receive enable), `SELECT band`,
+  `STREAM packing` (acknowledged when the stream ends), and `STEP` for development. The LO
+  (TUNE: any Hz the synthesizer reaches, on its 2-LSB grid), the analog filter (FILTER), gain
+  and trim are RF commands of their own; the filter is independent of the bandwidth and no
+  SETUP or RATE touches it.
+- **The radio code** (`radio/`, in a CRAM region at `0xe0040000`, above the ROM's download
+  buffers): MediaTek's cold initialisation and channel set, decoded record for record against
+  its traced cold load and written from the register headers (`include/hw/`), each module
+  checked access for access against that trace on the host (`radio/tests/mock.c`):
+  - `patch_init.c`: what MediaTek's ROM patch does at download (CBTOP and XO, pin mux, the
+    CONN AFE calibration pulse of every band, the A-die TOP init by chip ID, pads and CONN
+    switch, the A-die eFuse trims, read through the ROM's read-only reader);
+  - `bandinit.c`: the common PHY init (FEM and antenna-switch pin mux), the per-band PHY init,
+    and the tail (FEM outputs, crystal trim);
+  - `rfinit.c`: calibration item 0 (the A-die RF init tables) with R-cal and the RC
+    calibration;
+  - `chanset.c`: SETUP, MediaTek's receive-only channel set driven by the LO and bandwidth
+    alone (per-frequency-group A-die tables, PHY table B, the RX front end, the D-die RX setup,
+    the RX gain offsets; the synthesizer by `rfctl.c`'s TUNE program, run by `rfrun.c`), and RATE
+    (the same without the synthesizer); band 0 at 80 and 160 MHz is ours, MediaTek's 2.4 GHz
+    tables ending at 40 MHz (`chanset.h`);
+  - `dcoc.c`: the RX DC-offset calibration, at SETUP and on its own command;
+  - `capture.c`: the capture path as MediaTek's SPECTRUM command leaves it;
+  - `rfctl.c`: RF command programs (tune, gain, filter, trim, status, locks, band switch); band
+    0's 320 MHz filter is the MT7976's widened code 3 (`include/hw/adie/mt7976.h`);
+  - `stream_arm.c`: the capture route and ICAP0 around a stream;
+  - `hal.h`, `hal_wm.c`: the only hardware access: D-die loads and stores, one A-die SPI
+    transaction per access, delays, polls, a failure record.
+  Reception uses only what the receive path needs: no transmit calibration, no TX power, no
+  TTG IQ calibration (its filters are after the capture tap), MAC transmit kept disabled.
+
+## Streams (`stream/`)
+
+- `producer.c`, linked twice into the WM (raw at `0x00930000`, half-packed at `0x00932000`)
+  and entered by the STREAM command with interrupts off: waits for the pump's go word, runs
+  ICAP0 as a ring over the 1 MiB partition, follows its write pointer (CR9) and publishes each
+  8 KiB chunk on MCU_DMA0 TX ring 0, which lands in the host's WFDMA RX ring 0. It runs until
+  the stop word (same address as the go word) or an overrun, drains TX0 before stopping ICAP
+  and writes its results at `0x0090f000`. Between chunks it runs slices of control programs.
+- `ctl.h`: the control mailbox at `0x0090f400` and its resumable interpreter: RF commands
+  (expanded by our WM's builder, `radio/rfctl.c`) and raw ops (MMIO and A-die SPI reads and
+  writes, delays, polls) for development and register discovery. A slice never waits, so a
+  retune does not stall a 320 Msps stream.
+- `packer.c` and `pack.S`, linked into the WA at `0x1001a400`: 28-bit packing, 8 words to 7,
+  so 320 Msps fits one 10 GbE link; the producer raises the WA through a soft-interrupt slot.
+- `layout.h`: every fixed address and protocol word; `blob.py`: the compile/link recipe and the
+  two packing schedules (raw; half = WM 4 + WA 4 of every 16 chunks).
+
+## The WA (`wa/`)
+
+Our WA sets up its own memory attributes and caches (it leaves reset with both off; the packer
+reads the pool through the D-cache), then polls the soft-interrupt action word and calls the
+packer when the producer raises it. Our WM starts the WA for the first half-packed stream, once
+the radio is configured: a WA started earlier leaves the receiver without antenna signal. Its
+status block is at `0x0090f3e0`.
+
+## Containers (`own.py`, `container.py`, `aes.py`)
+
+`container.py` seals code into the RAM container format (one AES-128-CBC region per memory, an
+empty release envelope, the outer CRC32). The WM container holds four regions (ULM1 entry, the
+two producers, CRAM), the WA container two (entry, packer).
+
+## Hazards
+
+- The ROM's download writes its command packets into 2 KiB buffers in CRAM below `0xe0040000`;
+  code loaded there is corrupted (`include/hw/mt7996/mcu_map.h`).
+- A read of an address that does not answer faults our WM's load; the trap handler skips it,
+  and such a read returns nothing usable.
+- Register hazards are marked `HAZARD:` in `include/hw/`.

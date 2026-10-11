@@ -1,0 +1,53 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Let the installer serve stock U-Boot without running as root.
+#
+# Stock U-Boot fetches only from UDP 69. This redirects exactly that traffic
+# (from the unit, on one interface, to this host) to the installer's
+# unprivileged port. Nothing else on the host changes.
+#
+#   sudo init/host/tftp-forward enable IFACE [HOST_IP [UNIT_IP [PORT]]]
+#   sudo init/host/tftp-forward disable
+#   init/host/tftp-forward status
+set -eu
+unit=w1700k-tftp-forward.service
+rule=/etc/w1700k-tftp-forward.nft
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+usage() { echo "usage: $0 enable IFACE [HOST_IP [UNIT_IP [PORT]]] | disable | status" >&2; exit 2; }
+need_root() { [ "$(id -u)" = 0 ] || { echo "$0: run as root (sudo)" >&2; exit 1; }; }
+
+case "${1:-}" in
+enable)
+	need_root
+	[ $# -ge 2 ] || usage
+	iface=$2 host_ip=${3:-192.168.1.10} unit_ip=${4:-192.168.1.1} port=${5:-7071}
+	[ -e "/sys/class/net/$iface" ] || { echo "$0: no interface $iface" >&2; exit 1; }
+	cat > "$rule" <<RULE
+table ip w1700k_tftp {
+    chain prerouting {
+        type nat hook prerouting priority -105; policy accept;
+        iifname "$iface" ip saddr $unit_ip ip daddr $host_ip udp dport 69 redirect to :$port
+    }
+}
+RULE
+	chmod 0644 "$rule"
+	install -m 0644 "$here/$unit" "/etc/systemd/system/$unit"
+	systemctl daemon-reload
+	systemctl enable --now "$unit"
+	systemctl restart "$unit"
+	nft list chain ip w1700k_tftp prerouting
+	;;
+disable)
+	need_root
+	systemctl disable --now "$unit" 2>/dev/null || :
+	rm -f "/etc/systemd/system/$unit" "$rule"
+	systemctl daemon-reload
+	;;
+status)
+	systemctl status "$unit" --no-pager || :
+	nft list chain ip w1700k_tftp prerouting 2>/dev/null || echo "$0: the redirect is not loaded"
+	;;
+*)
+	usage
+	;;
+esac

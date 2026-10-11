@@ -1,0 +1,97 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] cmd: mtd: honour .dontskipbad on read and write, and report skipped blocks
+
+`mtd read` and `mtd write` skip bad blocks silently, and the skip before the
+loop shifts every later offset, so a whole-chip read returns a compacted
+image with nothing on the console to say so. Accept `.dontskipbad` as `mtd
+erase` does, and print a line for every block skipped.
+
+--- a/cmd/mtd.c
++++ b/cmd/mtd.c
+@@ -469,7 +469,8 @@
+ static int do_mtd_io(struct cmd_tbl *cmdtp, int flag, int argc,
+ 		     char *const argv[])
+ {
+-	bool dump, read, raw, woob, benchmark, write_empty_pages, has_pages = false;
++	bool dump, read, raw, woob, benchmark, write_empty_pages, dontskipbad;
++	bool has_pages = false;
+ 	u64 start_off, off, len, remaining, default_len, speed;
+ 	unsigned long bench_start, bench_end;
+ 	struct mtd_oob_ops io_op = {};
+@@ -496,6 +497,7 @@
+ 	woob = strstr(cmd, ".oob");
+ 	benchmark = strstr(cmd, ".benchmark");
+ 	write_empty_pages = !has_pages || strstr(cmd, ".dontskipff");
++	dontskipbad = strstr(cmd, ".dontskipbad");
+ 
+ 	argc -= 2;
+ 	argv += 2;
+@@ -543,10 +545,11 @@
+ 	}
+ 
+ 	if (has_pages)
+-		printf("%s %lld byte(s) (%d page(s)) at offset 0x%08llx%s%s%s\n",
++		printf("%s %lld byte(s) (%d page(s)) at offset 0x%08llx%s%s%s%s\n",
+ 		       read ? "Reading" : "Writing", len, npages, start_off,
+ 		       raw ? " [raw]" : "", woob ? " [oob]" : "",
+-		       !read && write_empty_pages ? " [dontskipff]" : "");
++		       !read && write_empty_pages ? " [dontskipff]" : "",
++		       dontskipbad ? " [dontskipbad]" : "");
+ 	else
+ 		printf("%s %lld byte(s) at offset 0x%08llx\n",
+ 		       read ? "Reading" : "Writing", len, start_off);
+@@ -557,10 +560,16 @@
+ 	io_op.datbuf = buf;
+ 	io_op.oobbuf = woob ? &buf[len] : NULL;
+ 
+-	/* Search for the first good block after the given offset */
++	/*
++	 * Search for the first good block after the given offset, unless the
++	 * caller asked for the physical image, in which case a bad block is
++	 * data like any other.
++	 */
+ 	off = start_off;
+-	while (mtd_block_isbad(mtd, off))
++	while (!dontskipbad && mtd_block_isbad(mtd, off)) {
++		printf("Skipping bad block at 0x%08llx\n", off);
+ 		off += mtd->erasesize;
++	}
+ 
+ 	led_activity_blink();
+ 
+@@ -570,8 +579,9 @@
+ 	/* Loop over the pages to do the actual read/write */
+ 	while (remaining) {
+ 		/* Skip the block if it is bad */
+-		if (mtd_is_aligned_with_block_size(mtd, off) &&
++		if (!dontskipbad && mtd_is_aligned_with_block_size(mtd, off) &&
+ 		    mtd_block_isbad(mtd, off)) {
++			printf("Skipping bad block at 0x%08llx\n", off);
+ 			off += mtd->erasesize;
+ 			continue;
+ 		}
+@@ -1217,9 +1227,10 @@
+ U_BOOT_LONGHELP(mtd,
+ 	"- generic operations on memory technology devices\n\n"
+ 	"mtd list\n"
+-	"mtd read[.raw][.oob][.benchmark]                <name> <addr> [<off> [<size>]]\n"
+-	"mtd dump[.raw][.oob]                            <name>        [<off> [<size>]]\n"
+-	"mtd write[.raw][.oob][.dontskipff][.benchmark]  <name> <addr> [<off> [<size>]]\n"
++	"mtd read[.raw][.oob][.dontskipbad][.benchmark]  <name> <addr> [<off> [<size>]]\n"
++	"mtd dump[.raw][.oob][.dontskipbad]              <name>        [<off> [<size>]]\n"
++	"mtd write[.raw][.oob][.dontskipff][.dontskipbad][.benchmark]\n"
++	"                                                <name> <addr> [<off> [<size>]]\n"
+ 	"mtd erase[.dontskipbad]                         <name>        [<off> [<size>]]\n"
+ 	"\n"
+ 	"Specific functions:\n"
+@@ -1254,7 +1265,9 @@
+ 	"\t[u|f]: user or factory OTP region\n"
+ #endif
+ 	"\n"
+-	"The .dontskipff option forces writing empty pages, don't use it if unsure.\n");
++	"The .dontskipff option forces writing empty pages, don't use it if unsure.\n"
++	"The .dontskipbad option keeps bad blocks in place instead of skipping them,\n"
++	"so offsets in the result match the device. Use it for a preservation dump.\n");
+ 
+ U_BOOT_CMD_WITH_SUBCMDS(mtd, "MTD utils", mtd_help_text,
+ #if CONFIG_IS_ENABLED(CMD_MTD_OTP)

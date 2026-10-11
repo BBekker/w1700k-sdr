@@ -1,0 +1,18 @@
+SPDX-License-Identifier: GPL-2.0+
+Subject: [PATCH] cmd: mtd: print the device access flags in `mtd list`
+
+So the installer can check that the chip is exposed read-only before it
+reads it.
+
+--- a/cmd/mtd.c
++++ b/cmd/mtd.c
+@@ -170,6 +170,9 @@
+ 
++	printf("  - flags: 0x%x (%s)\n", mtd->flags,
++	       (mtd->flags & MTD_WRITEABLE) ? "writeable" : "read-only");
++
+ 	printf("  - block size: 0x%x bytes\n", mtd->erasesize);
+ 	printf("  - min I/O: 0x%x bytes\n", mtd->writesize);
+ 
+ 	if (mtd->oobsize) {
+ 		printf("  - OOB size: %u bytes\n", mtd->oobsize);

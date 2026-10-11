@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0+
+// Applied after the board DTS by U-Boot's automatic include selection.
+#include "an7581-u-boot.dtsi"
+
+/ {
+	// Nothing is reserved: the dump buffer wants every byte it can get.
+	/delete-node/ reserved-memory;
+	/delete-node/ regulator-vmmc-3v3;
+	/delete-node/ oscillator;
+};
+
+&gdm1 { status = "okay"; };
+
+/delete-node/ &mmc0;
+/delete-node/ &gdm2;
+/delete-node/ &gdm4;
+/delete-node/ &pon_pcs;
+/delete-node/ &eth_pcs;
+/delete-node/ &pcie0;
+/delete-node/ &pcie1;
+/delete-node/ &pciephy;
+/delete-node/ &pbus_csr;

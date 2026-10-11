@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/dts-v1/;
+
+// No memory reservations: this image reads the whole chip into one buffer at
+// 0x90000000, sends it over TFTP and boots nothing else.
+
+#include "en7581.dtsi"
+
+/ {
+	model = "Gemtek W1700K write-free NAND dumper (2 GiB)";
+	compatible = "gemtek,w1700k-dumper", "airoha,an7581", "airoha,en7581";
+	aliases {
+		serial0 = &uart1;
+	};
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0 0x80000000 0 0x80000000>;
+	};
+};
+
+&en7581_pinctrl {
+	gpio-ranges = <&en7581_pinctrl 0 13 47>;
+};
+
+// Ethernet to send the backup; nothing else is enabled.
+&eth { status = "okay"; };
+&gdm1 { status = "okay"; };
+
+&{/soc/spi@1fa10000} { status = "okay"; };
+
+// No partitions: this image reads the whole chip, untranslated.
+&spi_nand { status = "okay"; };
