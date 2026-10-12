@@ -2,7 +2,8 @@
 """w1700k-spectrum end to end, without hardware.
 
 A fake controller (spectrum_fake_controller.py) stands in for `w1700k serve`, a fake exporter
-sends "SDR1" datagrams over loopback, and a minimal WebSocket client plays the browser. The
+sends "SDR1" datagrams over loopback to w1700k-stream, which serves them to the spectrum server,
+and a minimal WebSocket client plays the browser. The
 exporter follows the fake radio's tuning the way the real stream does: its samples carry a tone
 at one fixed RF frequency, so a frame labelled with the wrong tuning shows it in the wrong bin.
 The tests check that the page's messages reach the controller as the right ops, that the
@@ -28,9 +29,13 @@ import threading
 import time
 import unittest
 
+import stream_shm
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPECTRUM = os.path.join(ROOT, "host", "spectrum")
 BINARY = os.path.join(SPECTRUM, "build", "w1700k-spectrum")
+STREAM = os.path.join(ROOT, "host", "stream")
+STREAM_BINARY = os.path.join(STREAM, "build", "w1700k-stream")
 FAKE_CONTROLLER = os.path.join(ROOT, "tests", "spectrum_fake_controller.py")
 
 MAGIC = 0x31524453
@@ -303,6 +308,8 @@ class WebSocketClient:
 
 
 class ServerFixture:
+    count = 0
+
     def __init__(self, test, controller=True, extra=(), passive_tuning=None, progress_delay=0.3):
         self.dir = tempfile.mkdtemp(prefix="spectrum-test-")
         test.addCleanup(shutil.rmtree, self.dir, True)
@@ -312,9 +319,19 @@ class ServerFixture:
         udp.bind(("127.0.0.1", 0))
         self.udp_port = udp.getsockname()[1]
         udp.close()
-        command = [BINARY, "--listen", "127.0.0.1:0", "--bind", "127.0.0.1", "--port", str(self.udp_port),
-                   "--rx-threads", "2", "--fft-threads", "2", "--ring-mib", "64", "--dump-dir", self.dir,
-                   "--dump-seconds", "0.01", *extra]
+        ServerFixture.count += 1
+        self.stream_name = "/w1700k-sptest-%d-%d" % (os.getpid(), ServerFixture.count)
+        self.service = subprocess.Popen([STREAM_BINARY, "--bind", "127.0.0.1", "--port", str(self.udp_port),
+                                         "--name", self.stream_name, "--ring-mib", "64", "--workers", "2",
+                                         "--rx-threads", "2"], stderr=subprocess.DEVNULL)
+        test.addCleanup(self.stop_service)
+        deadline = time.monotonic() + 10
+        while not stream_shm.ready(self.stream_name):
+            if time.monotonic() > deadline or self.service.poll() is not None:
+                raise AssertionError("w1700k-stream did not start")
+            time.sleep(0.05)
+        command = [BINARY, "--listen", "127.0.0.1:0", "--stream", self.stream_name, "--fft-threads", "2",
+                   "--dump-dir", self.dir, "--dump-seconds", "0.01", *extra]
         if controller:
             command += ["--controller", "exec %s %s --log %s --tuning-file %s --progress-delay %g"
                         % (shlex.quote(sys.executable), shlex.quote(FAKE_CONTROLLER), shlex.quote(self.log),
@@ -377,14 +394,24 @@ class ServerFixture:
                 self.process.wait()
         self.process.stderr.close()
 
+    def stop_service(self):
+        if self.service.poll() is None:
+            self.service.send_signal(signal.SIGTERM)
+            try:
+                self.service.wait(10)
+            except subprocess.TimeoutExpired:
+                self.service.kill()
+                self.service.wait()
+
 
 @unittest.skipIf(build_problem(), build_problem() or "")
 class SpectrumServerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        result = subprocess.run(["make", "-C", SPECTRUM, "-j4"], capture_output=True, text=True)
-        if result.returncode:
-            raise AssertionError("build failed:\n" + result.stdout[-3000:] + result.stderr[-3000:])
+        for directory in (STREAM, SPECTRUM):
+            result = subprocess.run(["make", "-C", directory, "-j4"], capture_output=True, text=True)
+            if result.returncode:
+                raise AssertionError("build failed:\n" + result.stdout[-3000:] + result.stderr[-3000:])
 
     def controller(self, ws):
         return ws.status.get("controller") or {}

@@ -28,7 +28,7 @@
 #include <thread>
 
 #include "controller.h"
-#include "ingest.h"
+#include "stream.h"
 #include "json.h"
 #include "serve.h"
 #include "spectrum.h"
@@ -144,12 +144,11 @@ class Service {
 public:
     explicit Service(const ServeOptions &options)
         : options_(options),
-          ring_(options.ring_slices),
-          ingest_(ring_, options.bind, options.port, options.rx_threads),
+          stream_(options.stream),
           web_(options.listen, options.web_dir,
                {[this](unsigned c) { on_open(c); }, [this](unsigned c, const std::string &m) { on_text(c, m); },
                 [this](unsigned c) { on_close(c); }, [this] { on_wake(); }, [this] { on_tick(); }}),
-          engine_(ring_, ingest_, Tuning{options.center_hz, options.sample_rate}, options.fft_threads,
+          engine_(stream_, Tuning{options.center_hz, options.sample_rate}, options.fft_threads,
                   [this](std::shared_ptr<const SpectrumFrame> frame) {
                       {
                           std::lock_guard<std::mutex> lock(frames_mutex_);
@@ -166,7 +165,6 @@ public:
                 Controller::Listener{[this](const JsonValue &state) { on_controller_state(state); },
                                      [this](const std::string &level, const std::string &text) { notice(level, text); },
                                      [this] { status_due_ = true; }});
-        ingest_.start();  // once the engine has planned its first transform
     }
 
     ~Service()
@@ -192,8 +190,31 @@ private:
         }
         const JsonValue *running = state.at("stream.running");
         const bool now_running = running && running->is_boolean() && running->boolean;
-        if (streaming_ && !now_running) ingest_.restart_run();  // what comes next is a new stream
+        if (streaming_ && !now_running) stream_.restart_run();  // what comes next is a new stream
         streaming_ = now_running;
+        // What the stream service needs to know to correct the roll-off.
+        auto number = [&](const char *path) {
+            const JsonValue *v = state.at(path);
+            return v && v->is_number() ? v->number : 0.0;
+        };
+        const double sample = number("radio.sample_rate"), capture = number("radio.capture_rate");
+        const double filter = number("rf.filter_mhz") * 1e6;
+        if (sample != radio_rate_ || capture != radio_capture_ || filter != radio_filter_) {
+            radio_rate_ = sample;
+            radio_capture_ = capture ? capture : sample;
+            radio_filter_ = filter;
+            stream_.set_radio(radio_rate_, radio_capture_, radio_filter_);
+            status_due_ = true;
+        }
+    }
+
+    // The correction applies where the analog filter is as wide as the sample rate and the stream
+    // is not 640/2, which is flat already (w1700k-stream decides; the page shows the same).
+    bool flatten_available() const
+    {
+        static const double kCorrected[] = {40e6, 80e6, 160e6, 320e6};
+        return radio_rate_ > 0 && radio_capture_ == radio_rate_ && radio_filter_ == radio_rate_ &&
+               std::find(std::begin(kCorrected), std::end(kCorrected), radio_rate_) != std::end(kCorrected);
     }
 
     void require_controller() const
@@ -235,7 +256,7 @@ private:
 
     Controller::Op start_op()
     {
-        return {"start", "", [this] { ingest_.restart_run(); }, report("start")};
+        return {"start", "", [this] { stream_.restart_run(); }, report("start")};
     }
 
     Controller::Op stop_op() { return {"stop", "", nullptr, report("stop")}; }
@@ -257,6 +278,12 @@ private:
     void receiver_set(const JsonValue &m)
     {
         require_controller();
+        if (m.has("flatten")) {
+            const JsonValue *v = m.at("flatten");
+            if (!v || !v->is_boolean()) throw std::runtime_error("flatten must be true or false");
+            stream_.set_flatten(v->boolean);
+            status_due_ = true;
+        }
         const bool configure = m.has("band") || m.has("sample_rate");
         if (configure) set_configuration(m);
         if (m.has("filter")) set_filter(m);
@@ -331,49 +358,53 @@ private:
     // ---- SIGUSR1 snapshot ------------------------------------------------------------------
 
     // A snapshot of the newest samples, a little behind the newest slice so they have all
-    // arrived: raw stream words (14-bit I in [29:16], Q in [13:0]), in sample order. A slice that
-    // is missing, or is overwritten while copied, is left as zeros and named in the .json; a
-    // firmware event's slot holds no samples and is left out.
+    // arrived, as the stream serves them: complex int16 (I, Q) on the 14-bit scale, corrected
+    // where the correction applied (flattened_slices in the .json), in sample order. A slice that
+    // is lost, or is overwritten while copied, is left as zeros and named in the .json; a firmware
+    // event's slot holds no samples and is left out.
     void dump()
     {
         const Tuning now = engine_.tuning();
         const uint64_t n = uint64_t(options_.dump_seconds * now.sample_rate / kSliceSamples);
         // The buffer first: filling it takes long enough for the ring to move on.
-        std::vector<uint32_t> words(n * kSliceSamples);
-        const Ingest::Position p = ingest_.position();
-        if (!p.run || !n || p.newest < n + 64 || n + 64 > ring_.capacity_slices() * 3 / 4) {
+        std::vector<int16_t> samples(n * kSliceSamples * 2);
+        const std::shared_ptr<const StreamView> view = stream_.view();
+        const StreamClient::Position p = stream_.position();
+        if (!view || !p.run || !n || p.newest < n + 64 || n + 64 > view->capacity() * 3 / 4) {
             std::fprintf(stderr, "dump: not enough stream (or more than the ring holds)\n");
             return;
         }
         const uint64_t first = p.newest - 64 - n;
         std::vector<uint64_t> missing;
-        uint64_t events = 0, kept = 0;
+        uint64_t events = 0, kept = 0, flattened = 0;
         for (uint64_t k = 0; k < n; ++k) {
-            const uint64_t index = first + k, want = SampleRing::tag_of(p.run, index);
-            if (ring_.tag(index) == SampleRing::event_tag_of(p.run, index)) {
+            const uint64_t index = first + k;
+            uint64_t tag = view->tag(index);
+            if (StreamView::holds_event(tag, p.run, index)) {
                 ++events;
                 continue;
             }
-            uint32_t *out = &words[kept++ * kSliceSamples];
-            bool ok = ring_.tag(index) == want;
+            int16_t *out = &samples[kept++ * kSliceSamples * 2];
+            bool ok = StreamView::holds_samples(tag, p.run, index);
             if (ok) {
-                std::memcpy(out, ring_.slice(index), kSliceSamples * 4);
+                std::memcpy(out, view->slice(index), kSliceSamples * 4);
                 std::atomic_thread_fence(std::memory_order_acquire);
-                ok = ring_.tag(index) == want;
+                ok = view->tag(index) == tag;
+                flattened += ok && (tag & W1700K_STREAM_TAG_FLAT);
             }
             if (!ok) {
                 std::memset(out, 0, kSliceSamples * 4);
                 missing.push_back(k);
             }
         }
-        words.resize(kept * kSliceSamples);
+        samples.resize(kept * kSliceSamples * 2);
         const std::optional<Tuning> held = engine_.tuning_over(p.run, first, first + n - 1);
         const Tuning t = held.value_or(now);
         const long stamp = long(std::chrono::duration_cast<std::chrono::milliseconds>(
                                     std::chrono::system_clock::now().time_since_epoch()).count());
         const std::string base = options_.dump_dir + "/w1700k-dump-" + std::to_string(stamp);
         FILE *f = std::fopen((base + ".bin").c_str(), "wbe");
-        bool written = f && std::fwrite(words.data(), 4, words.size(), f) == words.size();
+        bool written = f && std::fwrite(samples.data(), 2, samples.size(), f) == samples.size();
         if (f && std::fclose(f)) written = false;
         std::string list;
         for (size_t i = 0; i < missing.size() && i < 64; ++i) list += (i ? "," : "") + std::to_string(missing[i]);
@@ -381,11 +412,13 @@ private:
         if (j) {
             std::fprintf(j, "{\"center_hz\":%.3f,\"sample_rate\":%.3f,\"tuning_steady\":%s,\"run\":%llu,"
                             "\"first_slice\":%llu,\"slices\":%llu,\"samples\":%llu,\"event_slices\":%llu,"
-                            "\"missing_slices\":%zu,\"missing\":[%s],\"unix_ms\":%ld,\"format\":"
-                            "\"u32 words: I = bits 29:16, Q = bits 13:0, 14-bit two's complement\"}\n",
-                         t.center_hz, t.sample_rate, held ? "true" : "false", (unsigned long long)p.run,
-                         (unsigned long long)first, (unsigned long long)n, (unsigned long long)(kept * kSliceSamples),
-                         (unsigned long long)events, missing.size(), list.c_str(), stamp);
+                            "\"missing_slices\":%zu,\"missing\":[%s],\"flattened_slices\":%llu,\"unix_ms\":%ld,"
+                            "\"format\":\"ci16: int16 I then int16 Q per sample, 14-bit scale (full scale 8192)\"}\n",
+                         t.center_hz, t.sample_rate, held ? "true" : "false",
+                         (unsigned long long)StreamView::service_run(p.run), (unsigned long long)first,
+                         (unsigned long long)n, (unsigned long long)(kept * kSliceSamples),
+                         (unsigned long long)events, missing.size(), list.c_str(), (unsigned long long)flattened,
+                         stamp);
             if (std::fclose(j)) written = false;
         } else {
             written = false;
@@ -492,6 +525,7 @@ private:
 
     void on_tick()
     {
+        stream_.refresh();
         if (controller_) controller_->poll();
         if (dump_requested.exchange(false)) {
             if (dumping_) {
@@ -742,12 +776,14 @@ private:
 
     std::string waiting_message() const
     {
-        const std::string source = options_.bind + ":" + std::to_string(options_.port);
-        if (!controller_) return "No stream on " + source + ".";
-        if (!controller_->alive()) return "No stream on " + source + ", and the controller is not running.";
+        if (!stream_.alive())
+            return "The stream service is not running: start w1700k-stream (shared memory " + stream_.name() + ").";
+        const std::string source = "the stream service";
+        if (!controller_) return "No stream from " + source + ".";
+        if (!controller_->alive()) return "No stream from " + source + ", and the controller is not running.";
         if (controller_->busy()) return "Waiting for the receiver: " + controller_->busy_text() + ".";
-        if (streaming_) return "The receiver is streaming, but nothing arrives on " + source + ".";
-        return "No stream on " + source + ". Press ▶ to start one.";
+        if (streaming_) return "The receiver is streaming, but nothing arrives at " + source + ".";
+        return "No stream. Press ▶ to start one.";
     }
 
     // The status as named JSON sections.
@@ -755,7 +791,7 @@ private:
     {
         SpectrumSettings fft = engine_.settings();
         SpectrumEngine::Stats spectrum = engine_.stats();
-        Ingest::Stats in = ingest_.stats();
+        StreamClient::Stats in = stream_.stats();
         auto now = Clock::now();
         if (!marked_) {  // rates from here on, not from before the engine was ready
             mark_ = now;
@@ -786,10 +822,13 @@ private:
             {"message", json_quote(live ? "" : waiting_message())},
             {"running", live ? "true" : "false"},
             {"time", json_number(wall_ms())},
-            {"devices", "{\"source\":" + json_quote(options_.bind + ":" + std::to_string(options_.port)) +
+            {"devices", "{\"source\":" + json_quote(stream_.name()) +
                             ",\"controller\":" + (controller_ ? json_quote(options_.controller) : "null") + "}"},
             {"receiver", "{\"lo\":" + json_number(tuning.center_hz) + ",\"sample_rate\":" +
-                             json_number(tuning.sample_rate) + "}"},
+                             json_number(tuning.sample_rate) + ",\"flatten\":" +
+                             (stream_.flatten() ? "true" : "false") + ",\"flatten_available\":" +
+                             (flatten_available() ? "true" : "false") + ",\"flatten_active\":" +
+                             (in.flatten_active ? "true" : "false") + "}"},
             {"controller", controller_ ? controller_->status_json() : "{\"mode\":\"off\"}"},
         };
         std::string s;
@@ -816,20 +855,24 @@ private:
              ",\"bad\":" + std::to_string(in.bad) + ",\"late\":" + std::to_string(in.late) +
              ",\"before_start\":" + std::to_string(in.before_start) +
              ",\"duplicates\":" + std::to_string(in.duplicates) + ",\"socket_drops\":" + std::to_string(in.socket_drops) +
-             ",\"lost\":" + std::to_string(spectrum.slices_lost) +
+             ",\"lost\":" + std::to_string(in.lost) +
+             ",\"spare_words\":" + std::to_string(in.spare_words) +
+             ",\"stale_slices\":" + std::to_string(in.stale_slices) +
+             ",\"stale_lines\":" + std::to_string(in.stale_lines) +
+             ",\"flattened\":" + std::to_string(in.flattened) +
+             ",\"saturated\":" + std::to_string(in.saturated) +
              ",\"skipped\":" + std::to_string(spectrum.slices_skipped) +
              ",\"byte_rate\":" + json_number(std::round(byte_rate_)) +
              ",\"datagram_rate\":" + json_number(std::round(datagram_rate_)) +
              ",\"sample_rate\":" + json_number(std::round(sample_rate_)) +
              ",\"packed_share\":" + json_number(std::round(packed_share_ * 1000) / 1000) +
-             ",\"ring_slices\":" + std::to_string(ring_.capacity_slices()) + "}";
+             ",\"ring_slices\":" + std::to_string(in.ring_slices) + "}";
         section("stream");
         return sections;
     }
 
     const ServeOptions &options_;
-    SampleRing ring_;
-    Ingest ingest_;
+    StreamClient stream_;
     WebServer web_;
 
     std::mutex frames_mutex_;
@@ -839,6 +882,7 @@ private:
     // Web thread only.
     Tuning tuning_;                 // the stream's, as the controller last reported it
     bool streaming_ = false;        // the controller reports a stream running
+    double radio_rate_ = 0, radio_capture_ = 0, radio_filter_ = 0;  // the controller's, for the correction
     unsigned tuning_ops_ = 0;       // tune or configure requests under way
     bool status_due_ = false;       // something the status shows has changed
     unsigned client_ = 0;           // the WebSocket being served; 0: none
@@ -846,7 +890,7 @@ private:
     Clock::time_point mark_ = Clock::now();
     bool marked_ = false;
     SpectrumEngine::Stats mark_spectrum_;
-    Ingest::Stats mark_in_;
+    StreamClient::Stats mark_in_;
     double spectrum_fps_ = 0, spectrum_used_ = 0, spectrum_dropped_ = 0;
     double byte_rate_ = 0, datagram_rate_ = 0, sample_rate_ = 0, packed_share_ = 0;
     std::thread dump_thread_;
@@ -862,8 +906,8 @@ int command_serve(const ServeOptions &options)
 {
     std::signal(SIGPIPE, SIG_IGN);  // a controller that exits closes the pipe we write
     Service service(options);
-    std::fprintf(stderr, "serving on http://%s/, stream from %s:%u, controller %s  (Ctrl-C to stop)\n",
-                 service.address().c_str(), options.bind.c_str(), options.port,
+    std::fprintf(stderr, "serving on http://%s/, stream from w1700k-stream %s, controller %s  (Ctrl-C to stop)\n",
+                 service.address().c_str(), options.stream.c_str(),
                  options.controller.empty() ? "off" : ("`" + options.controller + "`").c_str());
     stop_requested = false;
     std::signal(SIGINT, on_signal);

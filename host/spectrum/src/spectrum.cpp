@@ -37,8 +37,7 @@ const std::vector<std::pair<std::string, std::vector<double>>> &window_table()
 std::mutex planner;  // FFTW's planner is not thread-safe; executing a plan is
 
 // A sample word: I in [29:16], Q in [13:0], 14-bit two's complement.
-inline float i_of(uint32_t w) { return float(int32_t(w << 2) >> 18); }
-inline float q_of(uint32_t w) { return float(int32_t(w << 18) >> 18); }
+
 
 }  // namespace
 
@@ -118,6 +117,7 @@ struct SpectrumEngine::Transform {
 };
 
 struct SpectrumEngine::Job {
+    std::shared_ptr<const StreamView> view;  // the mapping the run lives in
     uint64_t sequence = 0, run = 0, first = 0, stride = 0;
     unsigned blocks = 0;
     std::shared_ptr<const Transform> transform;
@@ -137,9 +137,8 @@ struct SpectrumEngine::Worker {
     }
 };
 
-SpectrumEngine::SpectrumEngine(const SampleRing &ring, const Ingest &ingest, const Tuning &tuning, unsigned workers,
-                               Output output)
-    : ring_(ring), ingest_(ingest), output_(std::move(output))
+SpectrumEngine::SpectrumEngine(const StreamClient &stream, const Tuning &tuning, unsigned workers, Output output)
+    : stream_(stream), output_(std::move(output))
 {
     latest_.tuning = tuning;
     history_.push_back(latest_);
@@ -207,7 +206,7 @@ void SpectrumEngine::set_tuning(const Tuning &tuning)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (latest_.valid && latest_.tuning == tuning) return;
-    const Ingest::Position p = ingest_.position();
+    const StreamClient::Position p = stream_.position();
     add_segment({p.run, p.newest + kSettleSlices, true, tuning});
 }
 
@@ -215,7 +214,7 @@ void SpectrumEngine::begin_change()
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!latest_.valid) return;
-    const Ingest::Position p = ingest_.position();
+    const StreamClient::Position p = stream_.position();
     add_segment({p.run, p.newest, false, latest_.tuning});
 }
 
@@ -276,7 +275,13 @@ void SpectrumEngine::schedule()
             upcoming.insert(upcoming.end(), pending_.begin(), pending_.end());
             pending_.clear();
         }
-        const uint64_t r = ingest_.run(), newest = ingest_.newest();
+        const std::shared_ptr<const StreamView> view = stream_.view();
+        const StreamClient::Position position = stream_.position();
+        if (!view) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+        const uint64_t r = position.run, newest = position.newest;
         if (r != run) {
             run = r;
             frontier = next = 0;
@@ -290,17 +295,17 @@ void SpectrumEngine::schedule()
         }
 
         uint64_t lost = 0, skipped = 0, dropped = 0, retuned = 0;
-        const uint64_t capacity = ring_.capacity_slices();
+        const uint64_t capacity = view->capacity();
         if (newest > frontier + capacity / 2) {  // far behind (planning a new size): what was there is gone
             skipped += newest - capacity / 4 - frontier;
             frontier = newest - capacity / 4;
             next = std::max(next, frontier * kSliceSamples);
         }
         while (frontier < newest) {
-            const uint64_t tag = ring_.tag(frontier);
-            if (tag == SampleRing::tag_of(run, frontier) || tag == SampleRing::event_tag_of(run, frontier)) {
+            const uint64_t tag = view->tag(frontier);
+            if (StreamView::holds_samples(tag, run, frontier) || StreamView::holds_event(tag, run, frontier)) {
                 ++frontier;
-            } else if (newest > frontier + kHorizon) {
+            } else if (StreamView::holds_loss(tag, run, frontier) || newest > frontier + kHorizon) {
                 ++frontier;
                 ++lost;
             } else {
@@ -336,6 +341,7 @@ void SpectrumEngine::schedule()
                     ++retuned;
                 } else if (jobs_.size() < 2 * workers_.size()) {
                     Job job;
+                    job.view = view;
                     job.sequence = sequence++;
                     job.run = run;
                     job.first = next;
@@ -394,20 +400,20 @@ void SpectrumEngine::work(Worker &w)
             const uint64_t s0 = position / kSliceSamples, s1 = (position + n - 1) / kSliceSamples;
             auto present = [&] {
                 for (uint64_t s = s0; s <= s1; ++s)
-                    if (ring_.tag(s) != SampleRing::tag_of(job.run, s)) return false;
+                    if (!StreamView::holds_samples(job.view->tag(s), job.run, s)) return false;
                 return true;
             };
             if (!present()) {
                 missing += n;
                 continue;
             }
-            // The block's words, slice by slice: (fn)(sample number in block, word).
+            // The block's samples, slice by slice: (fn)(sample number in block, I, Q).
             auto each = [&](auto fn) {
                 uint64_t p = position;
                 for (unsigned k = 0; k < n;) {
-                    const uint32_t *words = ring_.slice(p / kSliceSamples);
+                    const int16_t *iq = job.view->slice(p / kSliceSamples);
                     unsigned offset = unsigned(p % kSliceSamples), m = std::min(n - k, kSliceSamples - offset);
-                    for (unsigned j = 0; j < m; ++j) fn(k + j, words[offset + j]);
+                    for (unsigned j = 0; j < m; ++j) fn(k + j, float(iq[2 * (offset + j)]), float(iq[2 * (offset + j) + 1]));
                     k += m;
                     p += m;
                 }
@@ -415,18 +421,18 @@ void SpectrumEngine::work(Worker &w)
             float mean_i = 0, mean_q = 0;
             if (job.remove_dc) {
                 double sum_i = 0, sum_q = 0;
-                each([&](unsigned, uint32_t x) {
-                    sum_i += i_of(x);
-                    sum_q += q_of(x);
+                each([&](unsigned, float i, float q) {
+                    sum_i += i;
+                    sum_q += q;
                 });
                 mean_i = float(sum_i / n);
                 mean_q = float(sum_q / n);
             }
             const float *window = t.window.data();
             fftwf_complex *in = w.in;
-            each([&](unsigned k, uint32_t x) {
-                in[k][0] = (i_of(x) - mean_i) * window[k];
-                in[k][1] = (q_of(x) - mean_q) * window[k];
+            each([&](unsigned k, float i, float q) {
+                in[k][0] = (i - mean_i) * window[k];
+                in[k][1] = (q - mean_q) * window[k];
             });
             std::atomic_thread_fence(std::memory_order_acquire);
             if (!present()) {  // a slot was taken over while we read it

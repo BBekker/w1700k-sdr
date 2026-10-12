@@ -19,8 +19,9 @@ receiver controls. The MT7996 runs only our firmware.
 | MT7996 WM MCU | our WM | brings the radio up from cold; sets each band's LO, sample rate, filter and capture path on command; runs the stream producer |
 | MT7996 WA MCU | our WA | packs its share of chunks to 28 bits per sample pair |
 | Host (x86 Linux) | `w1700k` | load, configure, stream, RF control: commands to our firmware |
-| Host | `w1700k-spectrum` | receives the export, FFT, web UI; drives the unit through `w1700k serve` |
-| Host | `sdr-recv` | records or validates the raw stream |
+| Host | `w1700k-stream` | receives the export; serves the IQ stream to every consumer through shared memory, unpacked, gap-tagged, optionally corrected for the decimation's roll-off; checks the export's integrity |
+| Host | `w1700k-spectrum` | FFT and web UI over the served stream; drives the unit through `w1700k serve` |
+| Host | `sdr-recv` | records the served stream |
 
 ## Bring-up
 
@@ -65,7 +66,9 @@ transmit path stays disabled.
    │          mapped read-only into userspace, never copied
  kernel export: one UDP datagram per slice, pages attached (zero copy),
    │            sent on the 10 GbE port at line rate
- host: 8 receive threads → sample ring → FFT workers → browser
+ host: w1700k-stream (8 receive threads → reorder ring → workers: unpack,
+   │    optional correction) → shared ring of complex int16
+   └──→ consumers: w1700k-spectrum (FFT workers → browser), sdr-recv, …
 ```
 
 Rates. The sample rate is twice the radio's bandwidth class (20, 40, 80 or

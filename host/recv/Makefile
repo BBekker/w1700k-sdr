@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: MIT
-# sdr-recv: a C11 compiler and POSIX threads.
+# sdr-recv: a C11 compiler; it reads w1700k-stream's shared memory (../stream/include).
 CC ?= cc
 CFLAGS ?= -O2
 WARNINGS ?= -Wall -Wextra -Werror
 PREFIX ?= /usr/local
-override CFLAGS += -std=c11 -pthread $(WARNINGS)
-LDLIBS += -pthread
+override CFLAGS += -std=c11 -I../stream/include $(WARNINGS)
+LDLIBS += -lrt
 
 .PHONY: all clean install
 all: build/sdr-recv
 
-build/sdr-recv: sdr-recv.c | build
+build/sdr-recv: sdr-recv.c ../stream/include/w1700k_stream.h | build
 	$(CC) $(CFLAGS) $(LDFLAGS) $< $(LDLIBS) -o $@
 
 build:

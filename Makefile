@@ -49,8 +49,9 @@ dumper: toolchain
 firmware:
 	$(MAKE) -C firmware
 
-# Spectrum web UI server and the raw IQ recorder.
+# The stream service, the spectrum web UI server and the IQ recorder.
 host:
+	$(MAKE) -C host/stream
 	$(MAKE) -C host/spectrum
 	$(MAKE) -C host/recv
 

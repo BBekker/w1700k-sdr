@@ -1129,12 +1129,17 @@ function showReceiver(s) {
         }
         const rf = st.rf || {};
         showSegmented('filter', rf.filter_mhz);
+        showValue($('flatten'), !!r?.flatten);
         showValue($('agc'), !!rf.agc);
         if (rf.lna !== null && rf.lna !== undefined) showValue($('lna'), rf.lna);
         if (rf.lpf !== null && rf.lpf !== undefined) showValue($('lpf'), rf.lpf);
         showGainOutputs();
     }
     showConfigNote();
+    $('flatten-note').textContent = !r?.flatten ? ''
+        : r.flatten_active ? 'The stream is corrected: the decimation\'s roll-off is divided out of the samples.'
+        : r.flatten_available ? 'Applies from the next slices.'
+        : 'Waits for a filter as wide as the sample rate (40, 80, 160 or 320; not 640/2).';
 
     const note = $('receiver-note'), parts = [];
     let bad = false;
@@ -1196,6 +1201,10 @@ function sendGain(immediate) {
     if ($('agc').checked) setReceiver('gain', {agc: true}, true);
     else setReceiver('gain', {agc: false, lna: Number($('lna').value), lpf: Number($('lpf').value)}, immediate);
 }
+$('flatten').addEventListener('change', () => {
+    touched.set($('flatten'), performance.now());
+    setReceiver('flatten', {flatten: $('flatten').checked}, true);
+});
 $('agc').addEventListener('change', () => {
     touched.set($('agc'), performance.now());
     sendGain(true);

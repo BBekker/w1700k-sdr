@@ -92,7 +92,7 @@ struct Ingest::Worker {
     std::vector<uint8_t> buffers = std::vector<uint8_t>(kBatch * kDatagram);
     // Written by this worker only, read by stats().
     std::atomic<uint64_t> datagrams{0}, bytes{0}, slices{0}, packed{0}, events{0}, pieces{0}, bad{0}, late{0},
-        duplicates{0}, drops{0}, before{0};
+        duplicates{0}, drops{0}, before{0}, spare{0}, stale{0}, stale_lines{0};
 };
 
 Ingest::Ingest(SampleRing &ring, const std::string &bind_ip, unsigned port, unsigned threads)
@@ -240,14 +240,41 @@ void Ingest::take(Worker &w, const uint8_t *data, size_t n, bool fresh, uint64_t
         ring_.put_event(run, index);
         w.events.fetch_add(1, std::memory_order_relaxed);
     } else if (slice_bytes == kRawBytes) {
-        ring_.put(run, index, reinterpret_cast<const uint32_t *>(data + kHeader));
+        const uint32_t *words = reinterpret_cast<const uint32_t *>(data + kHeader);
+        uint64_t spare = 0;
+        for (unsigned k = 0; k < kSliceSamples; ++k) spare += (words[k] & 0xc000c000u) != 0;
+        if (spare) w.spare.fetch_add(spare, std::memory_order_relaxed);
+        ring_.put(run, index, words);
         w.slices.fetch_add(1, std::memory_order_relaxed);
+        check(w, run, index);
     } else {
         ring_.put_packed(run, index, reinterpret_cast<const uint32_t *>(data + kHeader));
         w.slices.fetch_add(1, std::memory_order_relaxed);
         w.packed.fetch_add(1, std::memory_order_relaxed);
+        check(w, run, index);
     }
     atomic_max(newest_, index + 1);
+}
+
+// A slice equal to the one a capture-ring lap earlier is what a reader that overtook the capture
+// sends; an 8-sample line equal to the same line a lap earlier (28 bytes packed, 32 raw) is what a
+// packer reading a stale D-cache line sends. Noise never repeats; a flat line (all eight samples
+// equal, which the radio does output) can, so it is not compared.
+void Ingest::check(Worker &w, uint64_t run, uint64_t index)
+{
+    if (index < kLap || ring_.tag(index - kLap) != SampleRing::tag_of(run, index - kLap)) return;
+    const uint32_t *now = ring_.slice(index), *then = ring_.slice(index - kLap);
+    uint64_t lines = 0, stale = 0;
+    for (unsigned g = 0; g < kSliceSamples; g += 8) {
+        bool flat = true;
+        for (unsigned k = 1; k < 8 && flat; ++k) flat = now[g + k] == now[g];
+        if (flat) continue;
+        ++lines;
+        stale += std::memcmp(now + g, then + g, 32) == 0;
+    }
+    if (ring_.tag(index - kLap) != SampleRing::tag_of(run, index - kLap)) return;  // overwritten meanwhile
+    if (stale) w.stale_lines.fetch_add(stale, std::memory_order_relaxed);
+    if (lines && stale == lines) w.stale.fetch_add(1, std::memory_order_relaxed);
 }
 
 Ingest::Position Ingest::position() const
@@ -275,6 +302,9 @@ Ingest::Stats Ingest::stats() const
         s.before_start += w->before.load(std::memory_order_relaxed);
         s.duplicates += w->duplicates.load(std::memory_order_relaxed);
         s.socket_drops += w->drops.load(std::memory_order_relaxed);
+        s.spare_words += w->spare.load(std::memory_order_relaxed);
+        s.stale_slices += w->stale.load(std::memory_order_relaxed);
+        s.stale_lines += w->stale_lines.load(std::memory_order_relaxed);
     }
     s.run = run_.load();
     s.newest = newest_.load();

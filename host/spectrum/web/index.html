@@ -50,6 +50,8 @@
       <h3>Front end</h3>
       <div class="row"><span class="label" title="The analog filter's width">Filter</span>
         <div class="segmented tight" id="filter"><button type="button" data-v="20">20</button><button type="button" data-v="40">40</button><button type="button" data-v="80">80</button><button type="button" data-v="160">160</button><button type="button" data-v="320">320</button></div><span class="unit">MHz</span></div>
+      <div class="row check"><label title="Divides the decimation's roll-off out of the IQ stream itself (w1700k-stream), for every consumer; it applies where the filter is as wide as the sample rate, and not at 640/2, which is flat already"><input id="flatten" type="checkbox"> Flatten the passband</label></div>
+      <p class="note" id="flatten-note"></p>
       <div class="row check"><label><input id="agc" type="checkbox"> Automatic gain control</label></div>
       <div class="row slider"><label for="lna" title="Low-noise amplifier, about 6 dB a step">LNA</label><input id="lna" type="range" min="0" max="4" step="1" value="2"><output for="lna" class="wide"></output></div>
       <div class="row slider"><label for="lpf" title="Baseband amplifier, about 2 dB a step">Baseband</label><input id="lpf" type="range" min="0" max="9" step="1" value="5"><output for="lpf" class="wide"></output></div>

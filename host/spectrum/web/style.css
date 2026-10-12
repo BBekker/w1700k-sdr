@@ -184,7 +184,7 @@ h3 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
 label.auto { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--dim); width: auto !important; }
 .segmented { display: flex; flex: 1; }
 .segmented button { flex: 1; border-radius: 0; padding: 3px 6px; min-width: 0; }
-.segmented.tight button { padding: 3px 1px; }
+.segmented.tight button { padding: 3px 2px; flex: 1 0 auto; }
 .segmented button:first-child { border-radius: 5px 0 0 5px; }
 .segmented button:last-child { border-radius: 0 5px 5px 0; margin-left: -1px; }
 .segmented button.on { background: #173352; border-color: var(--accent); color: #cfe6ff; }

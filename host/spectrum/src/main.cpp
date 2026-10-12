@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// w1700k-spectrum: a live spectrum and waterfall of the W1700K's exported stream, in a browser,
-// with the receiver's controls.
+// w1700k-spectrum: a live spectrum and waterfall of the W1700K's stream, as w1700k-stream serves
+// it, in a browser, with the receiver's controls.
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -16,11 +16,8 @@ void usage()
                  "usage: w1700k-spectrum [options]\n"
                  "  --listen ADDR:PORT  the web page (default 127.0.0.1:8073)\n"
                  "  --web DIR           serve the page from DIR instead of the built-in copy\n"
-                 "  --bind IP           the stream's destination address (default 10.77.0.10)\n"
-                 "  --port N            its UDP port (default 7700)\n"
-                 "  --rx-threads N      UDP sockets and threads (default 8)\n"
+                 "  --stream NAME       w1700k-stream's shared memory (default /w1700k-stream)\n"
                  "  --fft-threads N     FFT workers (default 4)\n"
-                 "  --ring-mib N        sample ring, a power of two (default 512)\n"
                  "  --controller CMD    the receiver's controller, run with sh -c (default \"w1700k serve\")\n"
                  "  --no-controller     a passive viewer: no receiver controls\n"
                  "  --center MHZ        the stream's centre frequency until the controller reports it (default 5250)\n"
@@ -71,11 +68,8 @@ int main(int argc, char **argv)
             };
             if (arg == "--listen") o.listen = value();
             else if (arg == "--web") o.web_dir = value();
-            else if (arg == "--bind") o.bind = value();
-            else if (arg == "--port") o.port = positive(arg, value());
-            else if (arg == "--rx-threads") o.rx_threads = positive(arg, value());
+            else if (arg == "--stream") o.stream = value();
             else if (arg == "--fft-threads") o.fft_threads = positive(arg, value());
-            else if (arg == "--ring-mib") o.ring_slices = positive(arg, value()) * 128;
             else if (arg == "--controller") o.controller = value();
             else if (arg == "--no-controller") o.controller.clear();
             else if (arg == "--center") o.center_hz = number(arg, value()) * 1e6;
@@ -89,8 +83,6 @@ int main(int argc, char **argv)
                 throw std::runtime_error("unknown option " + arg);
             }
         }
-        if (o.port > 65535) throw std::runtime_error("--port must be at most 65535");
-        if (o.ring_slices & (o.ring_slices - 1)) throw std::runtime_error("--ring-mib must be a power of two");
         if (o.controller.find_first_not_of(" \t") == std::string::npos) o.controller.clear();
     } catch (const std::exception &e) {
         std::fprintf(stderr, "w1700k-spectrum: %s\n", e.what());

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// The unit's UDP export received into a ring of samples. Each datagram carries one completion of
-// the unit's DMA ring, numbered by `seq`: a sample slice, raw (2048 words) or packed to 28 bits
-// (7168 bytes), or a short firmware event that shares the ring. A sample word holds 14-bit I in
-// bits [29:16] and Q in [13:0].
+// The unit's UDP export received into a ring of raw sample words, w1700k-stream's reorder buffer.
+// Each datagram carries one completion of the unit's DMA ring, numbered by `seq`: a sample slice,
+// raw (2048 words) or packed to 28 bits (7168 bytes), or a short firmware event that shares the
+// ring. A sample word holds 14-bit I in bits [29:16] and Q in [13:0].
 #pragma once
 
 #include <atomic>
@@ -13,6 +13,7 @@
 #include <vector>
 
 constexpr unsigned kSliceSamples = 2048;
+constexpr unsigned kLap = 128;  // slices in the unit's 1 MiB capture ring
 
 // Slots are indexed by completion number, so a firmware event occupies a slot without samples.
 // Events consume no sample time: the slices either side of one are contiguous.
@@ -60,6 +61,9 @@ public:
         uint64_t before_start = 0;       // in a run's first second, from before it (joined late)
         uint64_t duplicates = 0;
         uint64_t socket_drops = 0;       // SO_RXQ_OVFL, summed over the sockets
+        // The export's integrity: words of raw slices with spare bits set, and slices or 8-sample
+        // lines equal to the same slice or line one capture-ring lap (kLap completions) earlier.
+        uint64_t spare_words = 0, stale_slices = 0, stale_lines = 0;
         uint64_t newest = 0;             // highest slot index + 1 of the run
         double run_started = 0;          // steady seconds
         double last_any = 0;
@@ -84,6 +88,7 @@ private:
     struct Worker;
     void work(Worker &w);
     void take(Worker &w, const uint8_t *data, size_t n, bool fresh, uint64_t t);
+    void check(Worker &w, uint64_t run, uint64_t index);
 
     SampleRing &ring_;
     const std::string bind_ip_;

@@ -1,9 +1,10 @@
 # w1700k-spectrum
 
 A live spectrum and waterfall of the W1700K's sample stream in a web browser, with the
-receiver's controls: run/stop, LO, band and sample rate, analog filter and gain. One process
-receives the unit's UDP export, computes the spectrum (FFTW,
-several threads) and serves the page; receiver settings go to a controller process, by default
+receiver's controls: run/stop, LO, band and sample rate, analog filter, gain and the stream's
+roll-off correction. One process reads the stream as `w1700k-stream` serves it
+([`../stream`](../stream/README.md): shared memory), computes the spectrum (FFTW, several
+threads) and serves the page; receiver settings go to a controller process, by default
 `w1700k serve` from the host package.
 
 ## Build
@@ -22,24 +23,19 @@ The default flags are portable (`-O3`). Warnings are errors; `make WARNINGS=-Wal
 ## Run
 
 ```sh
+../stream/build/w1700k-stream &       # the stream service (it receives the export)
 build/w1700k-spectrum                 # then open http://127.0.0.1:8073/
 ```
 
-The host needs the stream's destination address (default 10.77.0.10) on the 10G link, an MTU
-of at least 8236 (one 8 KiB slice per datagram; 9000 is usual), and room for 48 MiB socket
-buffers: `sysctl -w net.core.rmem_max=67108864`, or the kernel caps them silently and drops
-datagrams under load (the page counts them as socket drops). `w1700k` must be on `PATH`, or
-name the controller with `--controller`.
+The stream service may start before or after the server, and restart: the server follows it.
+`w1700k` must be on `PATH`, or name the controller with `--controller`.
 
 | option | default | |
 |---|---|---|
 | `--listen ADDR:PORT` | `127.0.0.1:8073` | the page; `PORT` alone listens on every address |
 | `--web DIR` | built in | serve the page from DIR, read on every request (development) |
-| `--bind IP` | `10.77.0.10` | the stream's destination address |
-| `--port N` | `7700` | its UDP port |
-| `--rx-threads N` | 8 | UDP sockets and receive threads (`SO_REUSEPORT`) |
+| `--stream NAME` | `/w1700k-stream` | the stream service's shared memory |
 | `--fft-threads N` | 4 | FFT workers |
-| `--ring-mib N` | 512 | sample ring, a power of two (512 MiB holds 0.42 s at 320 Msps) |
 | `--controller CMD` | `w1700k serve` | the receiver's controller, run with `sh -c` |
 | `--no-controller` | | a passive viewer: no receiver controls |
 | `--center MHZ` | 5250 | the stream's centre frequency until the controller reports it |
@@ -50,11 +46,11 @@ name the controller with `--controller`.
 One browser is served at a time: opening the page elsewhere takes over (the previous one is
 closed with code 4001 and offers to take it back).
 
-`kill -USR1` writes the newest samples to `DIR/w1700k-dump-<unix ms>.bin` (u32 words in sample
-order, I in bits 29:16 and Q in 13:0, 14-bit two's complement; packed slices unpacked) and a
-`.json` with `center_hz`, `sample_rate`, `tuning_steady` (false if the tuning changed within
-the snapshot), the slices covered, and the slices missing (written as zeros) or holding
-firmware events (left out).
+`kill -USR1` writes the newest samples, as the stream serves them, to
+`DIR/w1700k-dump-<unix ms>.bin` (complex int16, I then Q, on the 14-bit scale: full scale 8192)
+and a `.json` with `center_hz`, `sample_rate`, `tuning_steady` (false if the tuning changed
+within the snapshot), the slices covered, the slices missing (written as zeros) or holding
+firmware events (left out), and `flattened_slices`, those the correction produced.
 
 ## The controller
 
@@ -72,6 +68,12 @@ then 30 s; the page shows it as down meanwhile, and requests that were queued ar
 | Band, Sample rate 40-320 Msps or 640/2 (band 2), then Apply | `configure` `band`, `sample_rate`, `capture_rate` (the LO stays) |
 | Filter 20-320 MHz | `filter` `mhz` |
 | Automatic gain control, LNA 0-4 (~6 dB steps), Baseband 0-9 (~2 dB steps) | `gain` `agc:true`, or `lna` and `lpf` |
+| Flatten the passband | none: the stream service's `flatten` control word |
+
+Flatten asks `w1700k-stream` to correct the stream itself for the decimation's roll-off, for every
+consumer; the server also writes the radio's sample rate, capture rate and filter from the
+controller's state, and the correction applies where the filter is as wide as the sample rate and
+the rate is not 640/2 (`receiver.flatten_available`, `flatten_active` in the status).
 
 The controller picks the stream's packing from the sample rate (raw up to 160 Msps, half at 320,
 lossless either way); the Stream panel shows the share of packed slices. While a configure,
@@ -87,18 +89,11 @@ carries samples of one tuning under the label of another.
 
 ## The stream
 
-UDP datagrams from the unit's export, each a 16-byte little-endian header (`u32` magic
-`0x31524453` "SDR1", `u16` offset, `u16` slice_bytes, `u64` seq: the DMA completion number)
-and one slice: 8192 bytes raw (2048 samples) or 7168 bytes packed (of each 8 samples, the 8th
-rides in the other 7's spare bits [31:30] and [15:14]).
-
-Slices are filed into the ring by `seq`. A run (a stream) begins with the first datagram after
-a second of silence, after a jump in `seq`, or after the controller reports the stream stopped
-or is asked to start one. Completions shorter than 4096 bytes are firmware events that share
-the unit's ring: their slot is marked, the frontier steps over it without counting a loss, and
-the samples either side are contiguous. A completion the unit does not send at all (an empty
-one) cannot be told from a lost datagram and counts as lost. Pieces of slices (`offset` not 0)
-are counted, not reassembled.
+The stream service ([`../stream`](../stream/README.md)) receives and orders the export; the
+server reads its shared ring in slot order. A slot holding a firmware event takes no sample time
+(the samples either side are contiguous) and a lost one leaves a gap; FFT blocks that would span
+either are left out. The server asks the service for a new run when the controller reports the
+stream stopped or is asked to start one.
 
 ## Page and server
 
@@ -108,11 +103,12 @@ are JSON text with a type `t`, plus binary spectrum frames.
 From the page: `ping {c}`, `ack {seq}` for every frame, `view {start, stop, bins, auto, fps,
 kbps}` (the range and resolution wanted, and pacing limits), `fft {size, window, rate,
 averaging, peak, dc}`, `set {...}` with any of `lo`; `band, sample_rate, capture_rate`;
-`filter`; `agc, lna, lpf`, and `run {on}`.
+`filter`; `agc, lna, lpf`; `flatten`, and `run {on}`.
 
 From the server: `hello {version, windows, max_bins, controller, bands, rates {label,
-sample_rate, capture_rate, bands}, filters, max_lna, max_lpf}`, `status` (sections `state`, `message`, `running`, `devices`,
-`receiver {lo, sample_rate}`, `controller {mode, command, alive, pid,
+sample_rate, capture_rate, bands}, filters, max_lna, max_lpf}`, `status` (sections `state`,
+`message`, `running`, `devices`, `receiver {lo, sample_rate, flatten, flatten_available,
+flatten_active}`, `controller {mode, command, alive, pid,
 restarts, busy, progress, error, queued, state}`, `fft`, `spectrum`, `stream`, `link`; unchanged
 ones are left out), `notice {level, text}` and `pong`. A frame is a 48-byte little-endian header
 (`u8` kind 1, `u8` flags (bit 0: peak detector), `u16` bins, `u32` sequence, `f64` start and stop
@@ -121,6 +117,6 @@ and one byte per bin: dBFS = base + code × step.
 
 ## Tests
 
-`python3 -m unittest tests.test_spectrum_server tests.test_spectrum_recv` from the repository
-root builds both tools and runs them against a fake controller (`tests/spectrum_fake_controller.py`)
-and a fake export over loopback.
+`python3 -m unittest discover -s tests -p test_spectrum_server.py` from the repository root
+(`make check` runs it) builds the stream service and the server and runs them against a fake
+controller (`tests/spectrum_fake_controller.py`) and a fake export over loopback.

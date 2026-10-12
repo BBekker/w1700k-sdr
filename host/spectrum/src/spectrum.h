@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Live power spectrum of the stream: windowed FFTs of evenly spaced blocks of samples, combined
 // per frame and converted to dBFS. Frames are computed in parallel, each by one worker, straight
-// from the sample ring.
+// from the stream's shared ring (stream.h).
 #pragma once
 
 #include <atomic>
@@ -17,7 +17,7 @@
 #include <thread>
 #include <vector>
 
-#include "ingest.h"
+#include "stream.h"
 
 struct SpectrumSettings {
     unsigned size = 262144;    // FFT points: a power of two, 512..262144
@@ -59,8 +59,7 @@ public:
     using Output = std::function<void(std::shared_ptr<const SpectrumFrame>)>;
 
     // output: called on a worker thread, in frame order.
-    SpectrumEngine(const SampleRing &ring, const Ingest &ingest, const Tuning &tuning, unsigned workers,
-                   Output output);
+    SpectrumEngine(const StreamClient &stream, const Tuning &tuning, unsigned workers, Output output);
     ~SpectrumEngine();
     SpectrumEngine(const SpectrumEngine &) = delete;
     SpectrumEngine &operator=(const SpectrumEngine &) = delete;
@@ -110,8 +109,7 @@ private:
     std::shared_ptr<const Transform> transform(unsigned size, const std::string &window);
     void add_segment(Segment segment);  // with mutex_ held
 
-    const SampleRing &ring_;
-    const Ingest &ingest_;
+    const StreamClient &stream_;
     Output output_;
 
     mutable std::mutex mutex_;
