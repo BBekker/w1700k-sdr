@@ -41,12 +41,14 @@ bytes raw (2048 samples, I in bits [29:16], Q in [13:0]) or 7168 bytes packed (o
 the 8th rides in the other 7's spare bits [31:30] and [15:14]); completions shorter than 4096
 bytes are firmware events that share the ring.
 
-Completions are filed by `seq` into a reorder ring (64 MiB). A run, one stream, begins with the
+Completions are filed by `seq` into a reorder ring (256 MiB, 0.2 s at 320 Msps). A run, one stream, begins with the
 first datagram after a second of silence, after a jump in `seq`, or after a consumer asks for one
 (`restart_requests`, which the spectrum server does when the receiver starts or stops). Slots are
 published in order: one whose completion has arrived, a firmware event, or, once 1024 newer
 completions have arrived without it, a loss. After 5 ms with nothing new, what has arrived is
-published; a loss at the very end of a stream stays unpublished until more arrives.
+published; a loss at the very end of a stream stays unpublished until more arrives. Of the
+losses, `overruns` counts those that did arrive but were overwritten in the reorder ring before
+the service published them: the service fell behind (CPU contention), not the export.
 
 Every completion is checked on the way in, for the export's integrity: words of raw slices with
 spare bits set (`spare_words`), and slices or 8-sample lines (28 bytes packed, 32 raw) equal to

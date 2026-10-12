@@ -72,7 +72,9 @@ struct w1700k_stream_header {
 	 * that repeated old data */
 	uint64_t spare_words, stale_slices, stale_lines;
 	uint64_t flattened, saturated;	/* slices the correction produced; samples clipped to int16 */
-	uint64_t reserved2[13];
+	uint64_t overruns;		/* of the lost: arrived, but overwritten in the service's receive
+					 * ring before it was published (the service fell behind) */
+	uint64_t reserved2[12];
 
 	/* control: written by consumers, read by the service */
 	uint64_t restart_requests;	/* +1: the next completion starts a new run */

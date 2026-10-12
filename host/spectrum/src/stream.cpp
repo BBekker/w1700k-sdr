@@ -85,6 +85,7 @@ StreamClient::Stats StreamClient::stats() const
     s.stale_lines = load(&h->stale_lines);
     s.flattened = load(&h->flattened);
     s.saturated = load(&h->saturated);
+    s.overruns = load(&h->overruns);
     s.run_started = load(&h->run_started_ns) / 1e9;
     s.last_any = load(&h->last_any_ns) / 1e9;
     s.flatten_active = load(&h->flatten_active) != 0;

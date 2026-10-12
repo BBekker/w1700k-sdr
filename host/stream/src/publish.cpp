@@ -157,6 +157,7 @@ void Publisher::report()
     store(&out_->stale_slices, s.stale_slices);
     store(&out_->stale_lines, s.stale_lines);
     store(&out_->lost, lost_.load());
+    store(&out_->overruns, overruns_.load());
     store(&out_->flattened, flattened_.load());
     store(&out_->saturated, saturated_.load());
     store(&out_->received, s.newest);
@@ -293,6 +294,14 @@ Publisher::Slot Publisher::classify(uint64_t run, uint64_t index, bool) const
     return Slot::Lost;
 }
 
+// A lost slot whose place in the receive ring holds a later completion of the run: it may have
+// arrived and been overwritten before it was published.
+bool Publisher::overrun(uint64_t run, uint64_t index) const
+{
+    const uint64_t tag = raw_.tag(index) & ~(uint64_t(1) << 63);
+    return (tag >> 40) == run && (tag & ((uint64_t(1) << 40) - 1)) > index + 1;
+}
+
 void Publisher::process(Worker &w, const Job &job)
 {
     uint64_t *tags = w1700k_stream_tags(out_);
@@ -309,7 +318,7 @@ void Publisher::process(Worker &w, const Job &job)
     for (uint64_t s = job.first; s < job.last; ++s) w.kinds[s - job.first] = classify(job.run, s, job.flush);
 
     if (!job.flatten) {
-        uint64_t lost = 0;
+        uint64_t lost = 0, overruns = 0;
         for (uint64_t s = job.first; s < job.last; ++s) {
             const Slot kind = w.kinds[s - job.first];
             if (kind == Slot::Event) {
@@ -331,8 +340,10 @@ void Publisher::process(Worker &w, const Job &job)
             }
             finish(s, W1700K_STREAM_TAG_LOST);  // never arrived, or overwritten while being copied
             ++lost;
+            if (overrun(job.run, s)) ++overruns;
         }
         if (lost) lost_ += lost;
+        if (overruns) overruns_ += overruns;
         return;
     }
 
@@ -382,7 +393,7 @@ void Publisher::process(Worker &w, const Job &job)
     w.out.resize(2 * n);
     w.flatten.apply(*job.flatten, w.in.data(), n, w.out.data());
 
-    uint64_t lost = 0, flat = 0, clipped = 0;
+    uint64_t lost = 0, overruns = 0, flat = 0, clipped = 0;
     const float *y = w.out.data();
     for (uint64_t s = job.first; s < job.last; ++s) {
         const Slot kind = w.kinds[s - job.first];
@@ -408,9 +419,11 @@ void Publisher::process(Worker &w, const Job &job)
         }
         finish(s, W1700K_STREAM_TAG_LOST);
         ++lost;
+        if (overrun(job.run, s)) ++overruns;
         y += 2 * kSliceSamples;
     }
     if (lost) lost_ += lost;
+    if (overruns) overruns_ += overruns;
     if (flat) flattened_ += flat;
     if (clipped) saturated_ += clipped;
 }

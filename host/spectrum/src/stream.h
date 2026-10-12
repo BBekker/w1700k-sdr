@@ -76,7 +76,7 @@ public:
         uint64_t run = 0, ring_slices = 0;  // run: the service's number, 0: none yet
         uint64_t datagrams = 0, bytes = 0, slices = 0, packed = 0, events = 0, lost = 0;
         uint64_t pieces = 0, bad = 0, late = 0, before_start = 0, duplicates = 0, socket_drops = 0;
-        uint64_t spare_words = 0, stale_slices = 0, stale_lines = 0, flattened = 0, saturated = 0;
+        uint64_t spare_words = 0, stale_slices = 0, stale_lines = 0, flattened = 0, saturated = 0, overruns = 0;
         double run_started = 0, last_any = 0;  // steady seconds
         bool flatten_active = false;
     };

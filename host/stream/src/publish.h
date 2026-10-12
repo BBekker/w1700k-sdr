@@ -62,6 +62,7 @@ private:
     void process(Worker &w, const Job &job);
     enum class Slot { Data, Event, Lost };
     Slot classify(uint64_t run, uint64_t index, bool flush) const;
+    bool overrun(uint64_t run, uint64_t index) const;
     void publish_position(uint64_t run, uint64_t newest);
     const Flatten *correction() const;  // from the control words, nullptr: none applies
     void report();                      // heartbeat and counters into the header
@@ -78,7 +79,7 @@ private:
     unsigned busy_ = 0;
     bool stopping_ = false;
 
-    std::atomic<uint64_t> lost_{0}, flattened_{0}, saturated_{0};
+    std::atomic<uint64_t> lost_{0}, overruns_{0}, flattened_{0}, saturated_{0};
     std::vector<std::unique_ptr<Worker>> workers_;
     std::thread scheduler_;
 };

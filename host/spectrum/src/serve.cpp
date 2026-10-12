@@ -855,7 +855,7 @@ private:
              ",\"bad\":" + std::to_string(in.bad) + ",\"late\":" + std::to_string(in.late) +
              ",\"before_start\":" + std::to_string(in.before_start) +
              ",\"duplicates\":" + std::to_string(in.duplicates) + ",\"socket_drops\":" + std::to_string(in.socket_drops) +
-             ",\"lost\":" + std::to_string(in.lost) +
+             ",\"lost\":" + std::to_string(in.lost) + ",\"overruns\":" + std::to_string(in.overruns) +
              ",\"spare_words\":" + std::to_string(in.spare_words) +
              ",\"stale_slices\":" + std::to_string(in.stale_slices) +
              ",\"stale_lines\":" + std::to_string(in.stale_lines) +
