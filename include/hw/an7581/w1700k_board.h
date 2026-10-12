@@ -15,9 +15,10 @@
  *                        only where no factory-bad block precedes them.
  *   W1700K_LOAD_*        AN7581 physical DRAM addresses
  * Wiring is [static] from the board device tree unless tagged. Board
- * variants: FCC ID MXF-W1700K (HW labels 1.0, 1.1) and MXF-W1700K2 (HW 2.1,
- * reported with RTL8261CE PHYs and a different fan controller); nothing
- * here is verified on the W1700K2.
+ * variants: FCC ID MXF-W1700K (HW labels 1.0, 1.1) and MXF-W1700K2 (HW 2.1).
+ * The W1700K2 differs in its 10 GbE PHYs (below), its fan controller
+ * (marked NCT7512S) and, on some units, its SPI-NAND part; nothing here is
+ * measured on a W1700K2.
  */
 #ifndef HW_AN7581_W1700K_BOARD_H
 #define HW_AN7581_W1700K_BOARD_H
@@ -34,9 +35,11 @@
  *   32-bit bus [measured size; markings read from a board photograph].
  * Flash: Winbond W25N04KV, 512 MiB SPI-NAND [measured geometry].
  * Radio: MediaTek MT7996 on PCIe (two host interfaces, below).
- * 10GbE PHYs: two Realtek RTL8261N (10GBASE-T).
+ * 10GbE PHYs: two Realtek RTL8261N (10GBASE-T) on the W1700K, two RTL8261CE
+ *   on the W1700K2 [inferred].
  * Board monitor: Nuvoton fan/thermal controller on I2C0 at 0x2e (marked
- *   NCT7511Y; the device tree binds the NCT7802 driver).
+ *   NCT7511Y; NCT7512S on the W1700K2; the device tree binds the NCT7802
+ *   driver, whose device-tree probe checks no chip ID).
  */
 #define W1700K_DRAM_BYTES               0x80000000u
 #define W1700K_I2C0_HWMON_ADDR          0x2eu
@@ -96,6 +99,14 @@
  *   by the reference device tree.
  * The PHYs need the "rtl8261n.bin" patch (1,437 records) at their first
  * probe [measured].
+ * W1700K2: RTL8261CEs (PHY ID 0x001cc899, sub-model 0x00) at the same MDIO
+ *   addresses, with the same reset GPIOs and the same inverted lanes [inferred:
+ *   OpenWrt's one W1700K device tree runs on a 2.1, and the 2.1's stock boot
+ *   log names "rtl8261ce" and swaps the SerDes P/N]. Their driver loads
+ *   "rtl_nic/rtl8261c.bin" (Realtek, linux-firmware) when the PHY is first
+ *   configured and applies the lane polarity from the device tree itself
+ *   [static]. The kernel picks the driver by PHY ID, so one device tree and
+ *   one kernel serve both variants.
  * HAZARD: if the first PHY probe fails (patch not yet available), the error
  *   path holds both PHYs in reset (GPIO 31/46 low) and they never bind again
  *   until reboot [measured]. Build the patch into the kernel image.
@@ -155,6 +166,9 @@
 /*
  * W25N04KV geometry [measured]: 2048-byte pages + 128-byte OOB, 64 pages per
  * 128 KiB eraseblock, 4096 blocks, 512 MiB.
+ * Some W1700K2 units carry a W25N04LV instead (ID 0xef 0x8b 0x23: 4 KiB
+ * pages, 256 KiB eraseblocks) [inferred]; nothing in this project supports
+ * that geometry.
  * Bus: up to 50 MHz, commands 1-bit, reads 2-bit [static].
  * ECC: on-die, 8 bits per 512-byte step; the SoC's ECC and AutoFDM are off
  * [static]. ECC-protected free OOB ("AUTO"): 4 x 14 bytes at OOB offsets 2,

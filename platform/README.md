@@ -43,8 +43,9 @@ ship uutils), `gnuinstall` or `ginstall` must exist.
 
 [`sources.json`](sources.json) pins every upstream input: Buildroot by tag and
 commit, Linux and U-Boot by tarball SHA-256, the OpenWrt tree (kernel patches,
-the Airoha device tree and the RTL8261N PHY firmware generator) by commit, and
-the PHY firmware's own generator files and output by SHA-256.
+the Airoha device tree and the RTL8261N PHY firmware generator) by commit, the
+PHY firmware's own generator files and output by SHA-256, and the RTL8261CE's
+firmware file (the W1700K2's PHY) from linux-firmware by commit and SHA-256.
 [`fetch.py`](fetch.py) downloads and checks them; `W1700K_OPENWRT_GIT` points it
 at another OpenWrt repository (for example a local mirror) while still
 requiring the pinned commit.

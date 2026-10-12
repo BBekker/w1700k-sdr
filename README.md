@@ -64,10 +64,12 @@ between them, in 1.22 kHz bins.*
 
 ## Getting started
 
-You need a W1700K, a 3.3 V USB serial adapter on its console header, an
-Ethernet cable to its `lan3` port for installation, and a 10 GbE NIC on the
-host cabled to its `wan` port (10GBASE-T; an X710 with a copper SFP+ module
-works) for the IQ stream.
+You need a W1700K (HW 1.x) or W1700K2 (HW 2.1), a 3.3 V USB serial adapter on
+its console header, an Ethernet cable to its `lan3` port for installation, and
+a 10 GbE NIC on the host cabled to its `wan` port (10GBASE-T; an X710 with a
+copper SFP+ module works) for the IQ stream. Both revisions run the same images;
+a W1700K2 fitted with a W25N04LV NAND (ID `ef 8b 23` in the boot banner) is not
+supported.
 
 ```sh
 make                                   # everything, from public sources (~10 min plus downloads)
