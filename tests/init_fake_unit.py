@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: MIT
 """A simulated unit behind the ConsoleSession interface, for testing init/ offline.
 
-It models the four console states (stock U-Boot, the dumper, our loader, Linux),
-RAM, the loader partition, the stock environment and the UBI volumes well enough
-that installation and update runs can execute end to end, and it records every
-command it was given. Images are recognised by a marker after the FIT magic.
+It models the console states (stock U-Boot, the dumper, our loader, the
+restorer, Linux), RAM, the loader partition, the stock environment, the UBI
+volumes and, for the restorer, the vendor-logical NAND data well enough that
+installation, update and restore runs can execute end to end, and it records
+every command it was given. Images are recognised by a marker after the FIT
+magic.
 """
 import hashlib
 import re
@@ -16,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'init'))
 from initkit.uart import MUTATING  # noqa: E402
 
 PROMPTS = {'stock': 'ECNT> ', 'dumper': 'dumper> ', 'loader': 'SDR loader> ',
-           'linux': '/ # '}
+           'restorer': 'restore> ', 'linux': '/ # '}
 STOCK_BOOTCMD = 'flash imgread 2048;bootm'
 # The radio calibration image in the calibration partition: chip ID 0x7990 first.
 CALIBRATION = b'\x90\x79' + bytes(7678)
@@ -51,7 +53,8 @@ class Refused(Exception):
 
 
 class FakeUnit:
-    def __init__(self, served, chip_bytes=0x420000, installed=False):
+    def __init__(self, served, chip_bytes=0x420000, installed=False,
+                 translation='vendor BBT/BMT'):
         self.served = Path(served)
         self.state = 'off'
         self.env = {'bootcmd': STOCK_BOOTCMD, 'ethaddr': '00:aa:bb:01:23:40'}
@@ -63,8 +66,14 @@ class FakeUnit:
         self.erased = []
         self.log = []                  # (state, command)
         self.chip_bytes = chip_bytes
+        self.translation = translation
         self.allow_mutating = False
         self.buffer = ''
+        # The vendor-logical NAND data the restorer reads and writes.
+        self.nand = bytearray(b'\xff' * chip_bytes)
+        self.nand[0x400000:0x400000 + len(IDENTITY)] = IDENTITY
+        self.nand[0x405000:0x405000 + len(CALIBRATION)] = CALIBRATION
+        self.nand_writes = []          # (offset, length)
         self.catcher_armed = True
         if installed:
             self.loader_slot = fit('loader') + b'\xff' * (0x40000 - 0x9000)
@@ -91,6 +100,8 @@ class FakeUnit:
         if self.state == 'loader-countdown':        # nobody interrupted: autoboot
             self.state = 'loader'
             self.run_bootcmd()
+        elif self.state == 'rebooting' and not self.catcher_armed:
+            self.boot_unattended()
         return bool(ready())
 
     def arm(self):
@@ -112,6 +123,9 @@ class FakeUnit:
         if self.state == 'loader-countdown':
             self.state = 'loader'
         return self.expect_prompt(which)
+
+    def wake(self):
+        self.log.append((self.state, '<ctrl-c>'))
 
     def send_async(self, line):
         self.check_command(line)
@@ -154,6 +168,9 @@ class FakeUnit:
         image = self.ram.get(address, b'')
         if b'dumper' in image[:16]:
             self.state = 'dumper'
+        elif b'restorer' in image[:16]:
+            assert self.state == 'stock', 'stock U-Boot boots the restorer'
+            self.state = 'restorer'
         elif b'loader' in image[:16]:
             self.state = 'loader-countdown'
         elif b'recovery' in image[:16] and line.endswith('#conf-sdr'):
@@ -161,6 +178,16 @@ class FakeUnit:
             self.buffer += 'W1700K_BOOT_READY\n/ # '
         else:
             raise AssertionError(f'bootm of an unknown image at {address:#x}')
+
+    def boot_unattended(self):
+        """Stock U-Boot boots on its own: our loader, or the stock kernel."""
+        self.boot_stock()
+        if self.saved['bootcmd'] == STOCK_BOOTCMD:
+            self.buffer += 'U-Boot 2014.04-rc1\nStarting kernel ...\n'
+            self.state = 'stock-linux'
+        else:
+            self.run_bootcmd()
+            self.buffer += 'U-Boot 2026.07\nHit any key to stop autoboot:  5 '
 
     def run_bootcmd(self):
         if self.state == 'stock':
@@ -204,11 +231,36 @@ class FakeUnit:
         if not path.is_file():
             return 'TFTP error: File not found', 1
         data = path.read_bytes()
-        self.ram[int(words[1], 16)] = data
+        self.write_ram(int(words[1], 16), data)
         return f'Bytes transferred = {len(data)} ({len(data):x} hex)', 0
 
+    def write_ram(self, address, data):
+        """Store `data` at `address`, inside an existing piece when it falls in one."""
+        for start, piece in self.ram.items():
+            if start <= address and address + len(data) <= start + len(piece) and \
+                    (start < address or len(data) < len(piece)):
+                at = address - start
+                self.ram[start] = piece[:at] + data + piece[at + len(data):]
+                return
+        self.ram[address] = data
+
+    def any_unzip(self, line, words):
+        source, target, limit = (int(word, 16) for word in words[1:4])
+        # Like U-Boot's gunzip, stop at the end of the stream; RAM after it is
+        # whatever an earlier, longer load left there.
+        data = zlib.decompressobj(31).decompress(self.ram[source])[:limit]
+        self.write_ram(target, data)
+        return f'Uncompressed size: {len(data)} = 0x{len(data):X}', 0
+
     def read_ram(self, address, length):
-        """RAM as one span: pieces loaded at consecutive addresses join up."""
+        """RAM as one span: pieces loaded at consecutive addresses join up, and a
+        read may start inside a piece."""
+        inside = [start for start, piece in self.ram.items()
+                  if start < address < start + len(piece)]
+        if inside:
+            start = inside[0]
+            return (self.ram[start][address - start:] +
+                    self.read_ram(start + len(self.ram[start]), 0x7fffffff))[:length]
         data = bytearray()
         cursor = address
         while len(data) < length and cursor in self.ram:
@@ -225,7 +277,8 @@ class FakeUnit:
         data = self.read_ram(int(words[1], 16), 16)
         if not data.startswith(b'\xd0\x0d\xfe\xed'):
             return 'Bad Magic Number', 1
-        algorithm = 'sha1' if self.state == 'stock' else 'sha256'
+        # FITs stock can boot (ours for it, and the restorer) carry SHA-1.
+        algorithm = 'sha1' if self.state == 'stock' or b'restorer' in data else 'sha256'
         return f'   Hash(es) for Image 0 (kernel): {algorithm}+\n' \
                f'   Hash(es) for Image 1 (fdt): {algorithm}+', 0
 
@@ -255,19 +308,16 @@ class FakeUnit:
 
     def dumper_mtd(self, line, words):
         if words[1] == 'list':
-            return (f'* spi-nand0\n  - flags: 0x0 (read-only)\n  - min I/O: 0x800 bytes\n'
+            return (f'* spi-nand0\n  - flags: 0x0 (read-only)\n'
+                    f'  - translation: {self.translation}\n  - min I/O: 0x800 bytes\n'
                     f'  - OOB size: 128 bytes\n'
                     f'  - 0x000000000000-0x{self.chip_bytes:012x} : "spi-nand0"'), 0
-        if words[1] == 'bad':
-            return '', 0
         if words[1] == 'read.dontskipbad':
-            self.ram[int(words[3], 16)] = IDENTITY + b'\xff' * (0x800 - len(IDENTITY))
-            return 'Reading', 0
-        if words[1] == 'read.raw.oob.dontskipbad':
-            data = bytearray(self.chip_bytes + self.chip_bytes // 0x800 * 128)
+            offset, length = int(words[4], 16), int(words[5], 16)
+            data = bytearray(b'\xff' * max(offset + length, 0x406000))
             data[0x400000:0x400000 + len(IDENTITY)] = IDENTITY
             data[0x405000:0x405000 + len(CALIBRATION)] = CALIBRATION
-            self.ram[int(words[3], 16)] = bytes(data)
+            self.ram[int(words[3], 16)] = bytes(data[offset:offset + length])
             return 'Reading', 0
         raise AssertionError(line)
 
@@ -285,6 +335,65 @@ class FakeUnit:
         data = self.read_ram(int(words[1], 16), int(words[2], 16))
         (self.served / words[3]).write_bytes(data)
         return f'Bytes transferred = {len(data)}', 0
+
+    def restorer_mtd(self, line, words):
+        if words[1] == 'list':
+            return (f'* spi-nand0\n  - flags: 0x400 (writeable)\n'
+                    f'  - translation: {self.translation}\n'
+                    f'  - 0x000000000000-0x{len(self.nand):012x} : "spi-nand0"'), 0
+        if words[1] == 'read.dontskipbad':
+            offset, length = int(words[4], 16), int(words[5], 16)
+            self.ram[int(words[3], 16)] = bytes(self.nand[offset:offset + length])
+            return 'Reading', 0
+        if words[1] == 'erase':
+            offset, length = int(words[3], 16), int(words[4], 16)
+            self.nand[offset:offset + length] = b'\xff' * length
+            return f'Erasing 0x{offset:08x} ...', 0
+        if words[1] == 'write.dontskipbad':
+            address, offset, length = (int(word, 16) for word in words[3:6])
+            data = self.read_ram(address, length)
+            assert self.nand[offset:offset + length] == b'\xff' * length, 'write before erase'
+            self.nand[offset:offset + length] = data
+            self.nand_writes.append((offset, length))
+            if offset <= 0x200000 < offset + length:
+                env = data[0x200000 - offset:0x200000 - offset + 0x1000]
+                match = re.search(rb'bootcmd=([^\n\0]*)', env)
+                if match:
+                    self.saved['bootcmd'] = match.group(1).decode()
+            return f'Writing {length} byte(s) at offset 0x{offset:08x}', 0
+        raise AssertionError(line)
+
+    def restorer_nandsync(self, line, words, check=False):
+        address, offset, length = (int(word, 16) for word in words[2:5])
+        want = self.read_ram(address, length)
+        assert len(want) == length, 'nandsync past the loaded RAM'
+        differ = 0
+        for at in range(0, length, 0x20000):
+            block = want[at:at + 0x20000]
+            if self.nand[offset + at:offset + at + 0x20000] == block:
+                continue
+            differ += 1
+            if not check:
+                self.nand[offset + at:offset + at + 0x20000] = block
+                self.nand_writes.append((offset + at, 0x20000))
+                if offset + at == 0x200000:
+                    match = re.search(rb'bootcmd=([^\n\0]*)', block)
+                    if match:
+                        self.saved['bootcmd'] = match.group(1).decode()
+        word = 'differ' if check else 'rewritten and read back'
+        return f'nandsync: {length // 0x20000} blocks, {differ} {word}', 0
+
+    def restorer_nandsync_check(self, line, words):
+        return self.restorer_nandsync(line, words, check=True)
+
+    def restorer_tftpput(self, line, words):
+        return self.dumper_tftpput(line, words)
+
+    def restorer_md_b(self, line, words):
+        return self.dumper_md_b(line, words)
+
+    def restorer_bmtstats(self, line, words):
+        return 'bmtstats erase=0/0 program=0/0', 0
 
     def loader_bmtstats(self, line, words):
         return 'bmtstats erase=0/0 program=0/0 markbad=0/0 readback=0/0', 0

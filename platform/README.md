@@ -26,6 +26,7 @@ starts Dropbear for key-only root logins. Nothing at startup writes NAND.
 | loader | `loader/build.py` | `images/w1700k-loader.itb` (and `mkimage/`) |
 | images | `images.py` | `images/w1700k-system.itb`, `w1700k-recovery.itb`, `rootfs.squashfs`, `durable.ubifs` |
 | dumper | `dumper/build.py` | `images/w1700k-dumper.itb` |
+| restorer | `restorer/build.py` | `images/w1700k-restorer.itb` |
 
 A first build downloads about 500 MB of sources and builds a GCC toolchain;
 on a 20-core host the whole `make` takes about ten minutes plus the downloads.
@@ -58,8 +59,9 @@ requiring the pinned commit.
 | `linux/` | kernel configuration, the board device tree, our kernel patches, the Linux BMT binding, `board_check.py` |
 | `loader/` | our U-Boot: defconfig, default environment, device tree, patches, the U-Boot BMT binding |
 | `dumper/` | the write-free dumper: defconfig, environment, device tree, patches |
-| `patches/` | U-Boot patches both the loader and the dumper carry |
-| `bmt/` | the vendor bad-block translation and replacement engine, shared by both U-Boots and Linux, and its C test harnesses |
+| `restorer/` | the restorer that writes a backup back: defconfig, environment, patches (`nandsync`); the dumper's device tree |
+| `patches/` | U-Boot patches the loader, the dumper and the restorer all carry |
+| `bmt/` | the vendor bad-block translation and replacement engine, shared by our U-Boots and Linux, and its C test harnesses |
 | `bootstrap/` | the initramfs `init` that mounts the root |
 | `partitions.py` | the NAND layout, generated into both device trees and the BMT policy header |
 
@@ -91,7 +93,8 @@ The build stops when an output is wrong rather than leaving it for the unit to
 find: requested kernel options that Kconfig dropped, a device tree whose
 devices, 10 GbE wiring, reserved memory or partitions differ from the design,
 OpenWrt's `mtk_bmt` linked into a kernel or loader (it rewrites vendor tables it
-fails to parse), any NAND write path linked into the dumper, a U-Boot runtime
+fails to parse), any NAND write path or the BMT write engine linked into the
+dumper, a restorer without its write path, a U-Boot runtime
 that would overlap its staging area, or an image that does not fit its
 partition or volume. `make check` runs the unit tests, including the BMT layer
 compiled for the host.

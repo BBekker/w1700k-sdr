@@ -183,6 +183,14 @@
  * ~10 single-bit flips (~1 per 429 Mbit), each alone in its 512-byte ECC
  * step, none in OOB [measured]. Compare raw images per ECC step against the
  * part's strength, not by hash.
+ * Raw reads also carry the chip's stable errors, about 50 wrong bits per chip
+ * that the on-die ECC corrects on every normal read; uncorrected, a raw image
+ * fails stock's own kernel SHA-1 and squashfs checks [measured]. On-die ECC:
+ * step k's 13 parity bytes at OOB 64 + 16k, an affine function of its 512 data
+ * bytes; step 3 also covers its spare, where page 0 of a written block keeps a
+ * counter at OOB 60-63 [measured]. So init/ backups are not raw images: they
+ * hold the vendor-logical data read with the ECC on, 0 to the reserve
+ * (446 MiB).
  */
 #define W1700K_NAND_PAGE_BYTES          2048u
 #define W1700K_NAND_OOB_BYTES           128u

@@ -3,7 +3,8 @@
 
     1. stop stock U-Boot at power-on and record its environment
     2. boot the write-free dumper from RAM, read the unit's serial and back up
-       the whole NAND to the host (skipped when a backup of this unit exists)
+       its NAND data, as stock addresses it, to the host (skipped when a backup
+       of this unit exists)
     3. build the unit's root with its SSH keys
     4. write our loader into the `loader` partition through stock, read it back
        and boot that copy
@@ -45,7 +46,7 @@ def run(settings, expect_serial=None, authorized_key=None, import_host_key=None,
         print('install: booting the write-free dumper')
         stock.stage(console, log, settings, config.DUMPER, session.served)
         stock.boot(console, 'dumper')
-        serial = backup.read_serial(console)
+        serial = backup.read_serial(console, log)
         if expect_serial and serial != expect_serial:
             raise StepFailed(f'this unit is {serial}, not {expect_serial}; nothing was written')
         directory = config.unit_dir(settings.data_dir, serial)
@@ -57,7 +58,7 @@ def run(settings, expect_serial=None, authorized_key=None, import_host_key=None,
                 raise StepFailed(f'{existing} holds another unit; move it away first')
             print(f'install: keeping the existing backup {existing}')
         else:
-            print('install: backing up the whole NAND')
+            print('install: backing up the NAND data')
             backup.dump(console, log, settings, session.served, directory, serial)
         calibration = backup.extract_eeprom(existing, directory)
         print(f'install: radio calibration saved to {calibration}')

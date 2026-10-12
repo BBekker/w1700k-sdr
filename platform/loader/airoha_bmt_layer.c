@@ -362,6 +362,11 @@ int airoha_bmt_attach(struct mtd_info *mtd)
 #endif
 	return rc;
 }
+int airoha_bmt_attached(const struct mtd_info *mtd)
+{
+	return mtd && layer.mtd == mtd;
+}
+
 void airoha_bmt_detach(struct mtd_info *mtd)
 {
 #if BMT_WRITE

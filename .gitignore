@@ -9,6 +9,7 @@ __pycache__/
 # keys and captures live under ~/.local/share/w1700k/ (see init/README.md).
 *.pem
 *.key
+nand.bin
 nand-raw.bin
 eeprom.bin
 /captures/

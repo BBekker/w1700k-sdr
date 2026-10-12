@@ -17,7 +17,7 @@ from initkit.console import StepFailed  # noqa: E402
 from initkit.log import RunLog  # noqa: E402
 import init_fake_unit as fake  # noqa: E402
 
-DUMP_BYTES = 0x420000 + 0x420000 // 0x800 * 128
+DUMP_BYTES = 0x420000
 
 
 class Bench(unittest.TestCase):
@@ -126,6 +126,30 @@ class Install(Bench):
         stock_writes = [line for line in self.commands('stock')
                         if line.startswith(('flash write', 'flash erase'))]
         self.assertTrue(all(' 0x600000 ' in line for line in stock_writes))
+
+    def test_a_chip_the_dumper_cannot_translate_stops_before_anything(self):
+        unit = self.make_unit(translation='none')
+        with self.assertRaisesRegex(StepFailed, 'bad-block tables'):
+            self.install()
+        self.assertFalse(any(line.startswith(('md.b', 'tftpput', 'flash', 'saveenv'))
+                             for line in self.commands()))
+        self.assertEqual(unit.saved.get('bootcmd'), fake.STOCK_BOOTCMD)
+
+    def test_the_backup_is_read_corrected_and_translated(self):
+        self.make_unit()
+        self.install()
+        reads = [line for line in self.commands('dumper') if line.startswith('mtd read')]
+        self.assertTrue(reads and all(line.startswith('mtd read.dontskipbad spi-nand0 ')
+                                      for line in reads), reads)
+        self.assertEqual(reads[-1].split()[4:], ['0', f'{DUMP_BYTES:#x}'])
+
+    def test_the_console_is_woken_with_ctrl_c_never_an_empty_line(self):
+        # An empty line at a U-Boot prompt repeats the previous command.
+        self.make_unit()
+        self.install()
+        lines = [line for _, line in self.unit.log]
+        self.assertEqual(lines[0], '<ctrl-c>')
+        self.assertNotIn('', lines)
 
     def test_an_existing_backup_is_kept(self):
         directory = config.unit_dir(self.settings.data_dir, 'W1700KTEST0001')
@@ -254,10 +278,17 @@ class Parsing(unittest.TestCase):
         with self.assertRaisesRegex(StepFailed, 'no usable serial'):
             backup.serial_from({'serial_number': '../x'})
 
-    def test_geometry_gives_the_dump_size(self):
-        listing = ('  - min I/O: 0x800 bytes\n  - OOB size: 128 bytes\n'
-                   '  - 0x000000000000-0x000020000000 : "spi-nand0"')
-        self.assertEqual(backup.geometry(listing)['dump_bytes'], 0x22000000)
+    def test_only_a_translated_chip_is_backed_up(self):
+        with self.assertRaisesRegex(StepFailed, 'bad-block tables'):
+            backup.check_translated('  - translation: none')
+        with self.assertRaisesRegex(StepFailed, 'bad-block tables'):
+            backup.check_translated('  - flags: 0x0 (read-only)')
+        backup.check_translated('  - translation: vendor BBT/BMT')
+
+    def test_the_backup_ends_where_the_vendor_reserve_begins(self):
+        sys.path.insert(0, str(ROOT / 'platform'))
+        import partitions
+        self.assertEqual(backup.DUMP_BYTES, partitions.GEOMETRY['reserved-bmt'][0])
 
     def test_a_writable_chip_is_refused(self):
         with self.assertRaisesRegex(StepFailed, 'read-only'):
@@ -269,7 +300,8 @@ class Prompts(unittest.TestCase):
     def test_console_prompts_match_the_u_boot_configurations(self):
         from initkit import uart
         for state, defconfig in (('loader', 'loader/an7581_w1700k_sdr_defconfig'),
-                                 ('dumper', 'dumper/an7581_w1700k_dumper_defconfig')):
+                                 ('dumper', 'dumper/an7581_w1700k_dumper_defconfig'),
+                                 ('restorer', 'restorer/an7581_w1700k_restorer_defconfig')):
             text = (ROOT / 'platform' / defconfig).read_text()
             prompt = re.search(r'^CONFIG_SYS_PROMPT="(.*)"$', text, re.M).group(1)
             self.assertTrue(uart.PROMPTS[state].search(b'\n' + prompt.encode()), state)
