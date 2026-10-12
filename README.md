@@ -8,8 +8,9 @@ to it.
 
 ![The 2.4 GHz band live: spectrum and waterfall](docs/images/live-2g4.gif)
 
-*The whole 2.4 GHz band at 320 Msps, live: a 262,144-point FFT of every
-sample, 100 spectra a second (this recording runs at 50 frames a second).*
+*The whole 2.4 GHz band at 320 Msps, live, with the decimation's roll-off
+corrected in the stream ("flatten"): a 262,144-point FFT of every sample, 100
+spectra a second (this recording runs at 50 frames a second).*
 
 The MT7996 runs only our own firmware: a ROM patch, WM and WA built from this
 repository, with no MediaTek code. It brings the radio up from a cold power-on
@@ -33,17 +34,18 @@ register against a trace of MediaTek's own firmware, and takes its commands
 
 ![The web UI at 2.4 GHz](docs/images/ui-2g4.png)
 
-*2.4 GHz at 320 Msps: Wi-Fi frames and shorter hopping bursts. The Stream panel
-shows the link carrying 9.62 Gbit/s, half of the slices packed, and every
-sample transformed.*
+*2.4 GHz at 320 Msps, flattened: Wi-Fi frames and shorter hopping bursts on a
+floor that stays level to the band's edges. The Stream panel shows the link
+carrying 9.75 Gbit/s, half of the slices packed, and every sample transformed.*
 
 ![The web UI at 5 GHz](docs/images/ui-5g.png)
 
-*An 80 MHz Wi-Fi channel at 5170–5250 MHz in a 320 MHz view.*
+*Two busy 80 MHz Wi-Fi channels at 5170–5330 MHz in a flattened 320 MHz view.*
 
-![The same channel zoomed to 24 MHz](docs/images/ui-zoom.png)
+![The two channels' edges zoomed to 24 MHz](docs/images/ui-zoom.png)
 
-*The same channel's upper edge zoomed to 24 MHz, in 1.22 kHz bins.*
+*Zoomed to 24 MHz around 5250 MHz: the two channels' edges and the guard gap
+between them, in 1.22 kHz bins.*
 
 ## Repository
 
