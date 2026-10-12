@@ -10,7 +10,9 @@
 #include "hw/adie/sx.h"
 #include "hw/mt7996/conn.h"
 #include "hw/mt7996/mac.h"
+#include "hw/mt7996/mcu_map.h"
 #include "hw/mt7996/phy_chan.h"
+#include "hw/mt7996/secure.h"
 
 #include "chanset.h"
 #include "radio.h"
@@ -77,6 +79,8 @@ struct bwgrp {
 	uint16_t lo, span;
 };
 static const struct bwgrp bwgrp_160[] = { RFCHAN_BWGRP_160(BWGRP) };
+static const struct bwgrp bwgrp_320_epa[] = { RFCHAN_BWGRP_320_EPA(BWGRP) };
+static const struct bwgrp bwgrp_320_noepa[] = { RFCHAN_BWGRP_320_NOEPA(BWGRP) };
 
 #define FGRP(g, lo, span)	{ (g), (lo), (span) },
 static const struct bwgrp freq_groups[] = { MT7996_CHSET_GROUPS(FGRP) };
@@ -120,8 +124,6 @@ static const uint16_t glin[] = MT7996_CHSET_GLIN;
 
 #define ARRAY_SIZE(a)		(sizeof(a) / sizeof((a)[0]))
 
-_Static_assert(RADIO_NBW == MT7996_CHSET_BW160 + 1u, "classes 0..3: MediaTek's BW20..BW160");
-
 /* TUNE's program for the LO (prepare builds it to check the LO; the flow builds it again with the
  * band's new bandwidth for its frequency words) and its results. */
 static struct rfctl_op tune_ops[RFCTL_MAX_OPS];
@@ -145,8 +147,8 @@ static uint32_t freq_group(uint32_t khz)
 /* What the channel record held, from the LO alone (ours: no channel numbers): the centre in kHz,
  * the band type's channel-0 frequency, the frequency group (V:e00d41f6; on an MT7977 an LO outside
  * every group takes the nearest one, the first below 4850 MHz and the last above 7125 MHz) and the
- * LO's number on the band type's 5 MHz raster (0 off the raster), which only MediaTek's channel
- * number for RMAC CHFREQ reads (chfreq). */
+ * LO's number on the band type's 5 MHz raster (0 off the raster), which only MediaTek's few
+ * channel-number rules read (rx_adie_ch95, BN_MODE [8], RMAC CHFREQ). */
 static void lo_plan(struct chanset_ctx *c, uint64_t hz)
 {
 	uint32_t lo_mhz = freq_groups[0].lo, rem;
@@ -175,14 +177,30 @@ static int key_index(const void *keys, uint32_t keyw, uint32_t nkeys, uint32_t v
 	return -1;
 }
 
-/* Item 1's BW group of the centre frequency at BW160 (V:e0043328 EPA, V:e00435f0 no EPA). */
-static uint32_t bw_group(const struct chanset_ctx *c)
+/* Item 1's BW group of the centre frequency (V:e0043328 EPA, V:e00435f0 no EPA): *sel = 1 at
+ * BW320 when a group matched. */
+static uint32_t bw_group(const struct chanset_ctx *c, uint32_t *sel)
 {
-	uint32_t mhz = c->khz / MT7996_CHSET_KHZ_PER_MHZ;
+	uint32_t mhz = c->khz / MT7996_CHSET_KHZ_PER_MHZ, n, i;
+	const struct bwgrp *t;
 
-	for (uint32_t i = 0; i < ARRAY_SIZE(bwgrp_160); i++)
-		if (mhz - bwgrp_160[i].lo <= bwgrp_160[i].span)
-			return bwgrp_160[i].g;
+	*sel = 0;
+	if (c->bw == MT7996_CHSET_BW160) {
+		t = bwgrp_160;
+		n = ARRAY_SIZE(bwgrp_160);
+	} else {
+		if (c->epa && mhz == RFCHAN_BWGRP_320_EPA_5650_MHZ) {
+			*sel = 1;
+			return RFCHAN_BWGRP_320_EPA_5650;
+		}
+		t = c->epa ? bwgrp_320_epa : bwgrp_320_noepa;
+		n = c->epa ? ARRAY_SIZE(bwgrp_320_epa) : ARRAY_SIZE(bwgrp_320_noepa);
+	}
+	for (i = 0; i < n; i++)
+		if (mhz - t[i].lo <= t[i].span) {
+			*sel = c->bw == MT7996_CHSET_BW320;
+			return t[i].g;
+		}
 	return 0;
 }
 
@@ -201,7 +219,7 @@ struct item1_keys {
 
 static void item1_keys(const struct chanset_ctx *c, uint32_t wf, struct item1_keys *k)
 {
-	uint32_t g = c->group, bg;
+	uint32_t g = c->group, sel, bg;
 
 	if (c->epa)
 		k->common = key_index(rf_epa_common.keys, 1, rf_epa_common.nkeys,
@@ -211,12 +229,14 @@ static void item1_keys(const struct chanset_ctx *c, uint32_t wf, struct item1_ke
 		k->common = key_index(rf_noepa_common.keys, 1, rf_noepa_common.nkeys,
 				      g * RFCHAN_KEY_GRP_STRIDE + wf);
 	k->bw = 0;
-	if (c->bw == MT7996_CHSET_BW160) {
-		bg = bw_group(c);
+	if (c->bw == MT7996_CHSET_BW160 || c->bw == MT7996_CHSET_BW320) {
+		bg = bw_group(c, &sel);
 		if (c->epa)
-			k->bw = key_index(rf_epa_bw.keys, 1, rf_epa_bw.nkeys, bg * RFCHAN_KEY_GRP_STRIDE + wf);
+			k->bw = key_index(rf_epa_bw.keys, 1, rf_epa_bw.nkeys,
+					  bg * RFCHAN_KEY_GRP_STRIDE + wf + sel * RFCHAN_KEY_EPA_BW320);
 		else
-			k->bw = key_index(rf_noepa_bw.keys, 1, rf_noepa_bw.nkeys, bg * RFCHAN_KEY_GRP_STRIDE + wf);
+			k->bw = key_index(rf_noepa_bw.keys, 1, rf_noepa_bw.nkeys,
+					  bg * RFCHAN_KEY_GRP_STRIDE + wf + sel * RFCHAN_KEY_NOEPA_BW320);
 	}
 	k->xlna = key_index(rf_xlna.keys, 1, rf_xlna.nkeys, c->elna * RFCHAN_KEY_GRP_STRIDE + wf);
 	k->xpa = key_index(rf_xpa.keys, 1, rf_xpa.nkeys, c->epa * RFCHAN_KEY_GRP_STRIDE + wf);
@@ -247,9 +267,12 @@ static int wide_2g4(const struct chanset_ctx *c)
 	return c->band == MT7996_PHY_BAND_2G4 && c->bw > MT7996_CHSET_BW40;
 }
 
-/* Table B's key value for RF type k0 at BW class k1 (V:e00d90b6). */
+/* Table B's key value for RF type k0 at BW class k1 (V:e00d90b6; a 5 GHz key at BW320 takes the
+ * 6 GHz column). */
 static uint32_t tbl_b_keyval(const struct chanset_ctx *c, uint32_t k0, uint32_t k1)
 {
+	if (k1 == MT7996_CHSET_BW320 && k0 == MT7996_CHSET_TBL_B_K0_5G)
+		k0 = MT7996_CHSET_TBL_B_K0_6G;
 	return MT7996_PHY_CHTBL_B_KEY(k0, k1, c->nss_rx - 1, !c->elna);
 }
 
@@ -286,7 +309,10 @@ static uint32_t chanset_prepare(struct chanset_ctx *c, uint32_t band, uint64_t h
 	uint32_t ee, wf;
 	struct item1_keys k;
 
-	if (band >= RADIO_BANDS || bw >= RADIO_NBW)
+	if (band >= RADIO_BANDS || bw >= MT7996_CHSET_NBW)
+		return RADIO_ERR_ARG;
+	/* band 0 up to 160 MHz: at the 320 MHz class its PHY delivers no samples (chanset.h) */
+	if (band == MT7996_PHY_BAND_2G4 && bw > MT7996_CHSET_BW160)
 		return RADIO_ERR_ARG;
 	c->band = band;
 	c->mt7977 = radio_is_mt7977(band);
@@ -412,8 +438,8 @@ static void item1(const struct chanset_ctx *c, uint32_t wf)
 				if (c->group >= rf_extra[i].g0 && c->group <= rf_extra[i].g1)
 					hal_awr(die, rf_extra[i].k, rf_extra[i].reg, rf_extra[i].val);
 	}
-	/* COMMON_BW at BW160 (V:e0051de2 EPA, V:e0051e6a no EPA) */
-	if (c->bw == MT7996_CHSET_BW160) {
+	/* COMMON_BW at BW160 / BW320 (V:e0051de2 EPA, V:e0051e6a no EPA) */
+	if (c->bw == MT7996_CHSET_BW160 || c->bw == MT7996_CHSET_BW320) {
 		if (!d414_skip(band, MT7996_PHY_RFIF_D414_SKIP_TBL)) {
 			if (c->epa) {
 				for (i = 0; i < ARRAY_SIZE(rf_epa_bw_pre); i++)
@@ -765,7 +791,11 @@ static void table_b(const struct chanset_ctx *c)
 			}
 		}
 	}
-	hal_clr(MT7996_PHY_WFCOMM_C104(band), MT7996_PHY_WFCOMM_C104_F3_0);
+	if ((ee8(MT7996_PHY_EE_1A4) & MT7996_PHY_EE_1A4_B6) && band == MT7996_PHY_BAND_6G &&
+	    k1 == MT7996_CHSET_BW320)
+		hal_wf(MT7996_PHY_WFCOMM_C104(MT7996_PHY_BAND_6G), MT7996_PHY_WFCOMM_C104_F3_0, MT7996_CHSET_C104_VAL);
+	else
+		hal_clr(MT7996_PHY_WFCOMM_C104(band), MT7996_PHY_WFCOMM_C104_F3_0);
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -863,6 +893,11 @@ static const uint32_t rx_txcal_mt7977_noepa[] = MT7996_PHY_TXCAL_TBL_MT7977_NOEP
 static const uint32_t rx_gsel_map[] = MT7996_PHY_GSEL_MAP_INIT;
 static const uint32_t rx_gsel_grp[] = MT7996_PHY_GSEL1_GRP_MT7977;
 static const uint32_t rx_gsel_step[] = MT7996_PHY_GSEL1_STEP_MT7977;
+static const uint32_t rx_gsel_grp_bw320[] = MT7996_PHY_GSEL1_GRP_MT7977_BW320;
+static const uint32_t rx_gsel_step_bw320[] = MT7996_PHY_GSEL1_STEP_MT7977_BW320;
+
+static const uint32_t rx_36a_lo[] = RFCHAN_RXSET_36A_LO;
+static const uint32_t rx_36a_hi[] = RFCHAN_RXSET_36A_HI;
 
 /* Close the band's WFSYS gate: V:e00ddaac (band 0), V:e00ddb08 (band 1), V:e00ddb70 (band 2).
  * MediaTek picks band 1 and band 2 by value and band 0's helper for anything else. */
@@ -954,14 +989,16 @@ static void rx_txcal_tbl(const struct chanset_ctx *c)
 		hal_wr(MT7996_PHY_TXCAL_TBL(b, i), t[i]);
 }
 
-/* DFE +0xe338 [1:0] = 1 (V:e00de25a, again V:e00de3c0). */
+/* DFE +0xe338 [1:0]: 1 below BW320, 0 at BW320 (V:e00de25a / V:e00de572, again V:e00de3c0 /
+ * V:e00de584). */
 static void rx_e338(const struct chanset_ctx *c)
 {
-	hal_rmw(MT7996_PHY_DFE_E338(c->band), MT7996_PHY_DFE_E338_LO, MT7996_PHY_DFE_E338_B0);
+	hal_rmw(MT7996_PHY_DFE_E338(c->band), MT7996_PHY_DFE_E338_LO,
+		c->bw == MT7996_CHSET_BW320 ? 0 : MT7996_PHY_DFE_E338_B0);
 }
 
 /* MT7977 only (AdieSel 7, V:e00de268): gain-index selector set 1 rewritten whole with the
- * per-band init's values. */
+ * per-band init's values, at BW320 then with its BW320 values (STEP [4] included). */
 static void rx_gsel(const struct chanset_ctx *c)
 {
 	uint32_t b = c->band, i;
@@ -972,6 +1009,14 @@ static void rx_gsel(const struct chanset_ctx *c)
 		hal_wr(MT7996_PHY_GSEL_GRP(b, MT7996_PHY_GSEL_SET1, i), rx_gsel_grp[i]);
 	for (i = 0; i < ARRAY_SIZE(rx_gsel_step); i++)
 		hal_wr(MT7996_PHY_GSEL_STEP(b, MT7996_PHY_GSEL_SET1, i), rx_gsel_step[i]);
+	if (c->bw != MT7996_CHSET_BW320)
+		return;
+	for (i = 0; i < ARRAY_SIZE(rx_gsel_map); i++)
+		hal_wr(MT7996_PHY_GSEL_MAP(b, MT7996_PHY_GSEL_SET1, i), rx_gsel_map[i]);
+	for (i = 0; i < ARRAY_SIZE(rx_gsel_grp_bw320); i++)
+		hal_wr(MT7996_PHY_GSEL_GRP(b, MT7996_PHY_GSEL_SET1, i), rx_gsel_grp_bw320[i]);
+	for (i = 0; i < ARRAY_SIZE(rx_gsel_step_bw320); i++)
+		hal_wr(MT7996_PHY_GSEL_STEP(b, MT7996_PHY_GSEL_SET1, i), rx_gsel_step_bw320[i]);
 }
 
 /* The A-die part, V:e00dcd88(0, band, [0xe] = 0, [0xf] = 0, BW class), on the band's die.
@@ -994,6 +1039,21 @@ static void rx_adie(const struct chanset_ctx *c)
 		return;
 	}
 	hal_awr(die, ADIE_K_WF(0), ADIE_SX_OUT_FORCE, ADIE_SX_OUT_FORCE_ON);
+}
+
+/* 6 GHz BW320 on centre channel 95 with EEPROM 0x1a4 [7] set (V:e00de3fe..V:e00de5f4):
+ * chain word 0x36a on k 0..3, by the half of 320 MHz the primary 20 MHz channel is in. */
+static void rx_adie_ch95(const struct chanset_ctx *c)
+{
+	uint32_t die = ADIE_DIE_OF_BAND(c->band), k;
+	const uint32_t *t;
+
+	if (c->bw != MT7996_CHSET_BW320 || c->ch != RFCHAN_RXSET_36A_CENTRE ||
+	    !HW_GET(MT7996_PHY_EE_1A4_B7, ee8(MT7996_PHY_EE_1A4)))
+		return;
+	t = c->sec <= RFCHAN_RXSET_36A_PRI_LO_MAX ? rx_36a_lo : rx_36a_hi;
+	for (k = 0; k < ARRAY_SIZE(rx_36a_lo); k++)
+		hal_awr(die, ADIE_K_WF(k), ADIE_CHAIN_36A, t[k]);
 }
 
 /* V:e00ddd0e. */
@@ -1039,12 +1099,19 @@ static void rx_setup(const struct chanset_ctx *c)
 	hal_clr(MT7996_PHY_DFE_F000(b), MT7996_PHY_DFE_F000_F3_1);
 
 	/* Per BW class (V:e00de088..V:e00de4f4): BN_MODE [27:24] = the class; at BW160 DFE_F000
-	 * [3:1]; off band 0 WF_COMM +0xd24c [15] (set at BW80 only). */
-	hal_wf(MT7996_PHY_BN_MODE(b), MT7996_PHY_BN_MODE_CODE, c->bw);
-	if (c->bw == MT7996_CHSET_BW160)
-		hal_wf(MT7996_PHY_DFE_F000(b), MT7996_PHY_DFE_F000_F3_1, MT7996_PHY_DFE_F000_F3_1_BW160);
-	if (b != MT7996_PHY_BAND_2G4)
-		hal_wf(MT7996_PHY_WFCOMM_D24C(b), MT7996_PHY_WFCOMM_D24C_B15, c->bw == MT7996_CHSET_BW80);
+	 * [3:1]; off band 0 WF_COMM +0xd24c [15] (set at BW80 only); at BW320 BN_MODE [8] on the
+	 * second channelization's centres. Classes >= 5 write nothing. */
+	if (c->bw <= MT7996_CHSET_BW320) {
+		hal_wf(MT7996_PHY_BN_MODE(b), MT7996_PHY_BN_MODE_CODE, c->bw);
+		if (c->bw == MT7996_CHSET_BW160)
+			hal_wf(MT7996_PHY_DFE_F000(b), MT7996_PHY_DFE_F000_F3_1,
+			       MT7996_PHY_DFE_F000_F3_1_BW160);
+		if (b != MT7996_PHY_BAND_2G4)
+			hal_wf(MT7996_PHY_WFCOMM_D24C(b), MT7996_PHY_WFCOMM_D24C_B15,
+			       c->bw == MT7996_CHSET_BW80);
+		if (c->bw == MT7996_CHSET_BW320 && c->ch && MT7996_CHSET_320_2(c->ch))
+			hal_set(MT7996_PHY_BN_MODE(b), MT7996_PHY_BN_MODE_B8);
+	}
 
 	rx_gate_open(b);
 
@@ -1082,35 +1149,40 @@ static void rx_setup(const struct chanset_ctx *c)
 	/* V:e00de3dc */
 	hal_wf(MT7996_PHY_WFCOMM_B580(b), MT7996_PHY_WFCOMM_B580_F24_23,
 	       MT7996_PHY_WFCOMM_B580_F24_23_VAL);
+
+	rx_adie_ch95(c);
 }
 
 /* ------------------------------------------------------------------------------------------------
- * The handler's optional part (CHANSET_F_MAC).
+ * The handler's optional parts (CHANSET_F_MAC, CHANSET_F_BGRX).
  * ------------------------------------------------------------------------------------------------ */
 
-/* The channel set's optional part (chanset.h CHANSET_F_MAC): the MAC words of MediaTek's
- * channel-switch handler.
+/* The channel set's optional parts (chanset.h CHANSET_F_MAC, CHANSET_F_BGRX): the MAC words of
+ * MediaTek's channel-switch handler and its BW320 background-receiver stop / start.
  *
  * MediaTek's handler for UNI 0x34 tag 0 (V:e00b103c -> V:e00b0a74), in its order:
  *   chanset_mac_pre     RMAC SMPS_CTRL (V:e00b1006), the RATE BWCR code before the switch
  *                       (V:e00e54d2), band 0's RX stream count (V:e0123c70), LMAC ARB_SCR through
  *                       the TX / RX state machine, event 4 (V:e01245ec(4, band), V:e00b0b66);
+ *   chanset_bgrx_stop   6 GHz BW320 only: V:e00ad640(0, 2) (V:e00b0c5e);
  *     (TX power, the temperature class, the channel flow V:e00e5626 -> V:e00d708a, the thermal TX
  *      power V:e00b0a42: chanset.c, or left out)
- *   chanset_mac_post    TMAC TFCR0 (V:e00f07e2); V:e00b193a + V:e00e5c9a (RATE BWCR, WFSYS_ON
- *                       TICKCR0, RMAC CHFREQ); BN +0x8554 / +0x8d08, the EDCCA thresholds
- *                       (V:e00afca2); ARB_SCR, event 7 (V:e01245ec(7, band)); 2.4 GHz only band
- *                       0's BN_BGRX [6:4] (V:e00caf72); the handler tail's RATE BWCR write-back
- *                       (V:e00b1322..V:e00b1346).
- * Left out: the 320 MHz class's background-receiver stop and start around the flow (chanset.h).
- * Also V:e00afefc (writes the EDCCA thresholds only from wifi.cfg values and an EDCCA region
+ *   chanset_bgrx_start  6 GHz BW320 only: V:e00ad4de(0, 2, 0) (V:e00b0cb8), MediaTek's radar
+ *                       detector 2 on band 0's monitor chain (phy.h "Background (monitor)
+ *                       receiver");
+ *   chanset_mac_post    TMAC TFCR0 (V:e00f07e2); V:e00b193a + V:e00e5c9a (BW320: BN_MODE [8], TMAC
+ *                       TCR0; RATE BWCR, WFSYS_ON TICKCR0, RMAC CHFREQ); V:e00f080a (BW320); BN
+ *                       +0x8554 / +0x8d08, the EDCCA thresholds (V:e00afca2); ARB_SCR, event 7
+ *                       (V:e01245ec(7, band)); 2.4 GHz only band 0's BN_BGRX [6:4] (V:e00caf72);
+ *                       the handler tail's RATE BWCR write-back (V:e00b1322..V:e00b1346).
+ * Left out: V:e00afefc (writes the EDCCA thresholds only from wifi.cfg values and an EDCCA region
  * our firmware does not have; no access in the stock load), V:e00afbf8 / V:e0126ede (TX power;
  * no access), and the handler tail's MIB (V:e00af2e0), TMAC / RATE (V:e00f9b96), its second SMPS
  * read (V:e0123c70), BF words from EEPROM 0xc00.. (V:e00facc2), AGG (V:e00a7e38), TMAC
  * (V:e00f044e) and its two TMAC reads for a log line.
  *
  * Values: the channel (ctx), MediaTek's immediates and CR-map fields (mac_names.h), registers read
- * here, and state MediaTek keeps in WM RAM, kept here in the three words below. The ARB_SCR words
+ * here, and state MediaTek keeps in WM RAM, kept here in the four words below. The ARB_SCR words
  * are the state machine's result for a band whose MAC the host has not started (our firmware has
  * no MAC start): TX and RX disabled, as on every stock channel set.
  */
@@ -1119,7 +1191,8 @@ static void rx_setup(const struct chanset_ctx *c)
  * MediaTek's .bss). */
 static uint32_t mac_nrx;	/* V:e0123c70's count: V:e00b0a74's stack argument (pre -> post) */
 static uint32_t mac_bw_old;	/* V:e00e54d2: RATE BWCR's code before the switch (pre -> post) */
-static uint32_t bgrx_nrx;	/* WM byte 0xe01ebfe5: band 0's last count (post) */
+static uint32_t bgrx_nrx;	/* WM byte 0xe01ebfe5: band 0's last count (post -> bgrx_start) */
+static uint32_t bgrx_first_done; /* WM byte 0xe01ec27a: the detector start's first use done */
 
 /* LMAC ARB_SCR through V:e01245ec -> V:e01244b2: TX_DIS = !tx_en, RX_DIS = !rx_en, one GCI
  * transaction (one read, one write). */
@@ -1161,6 +1234,138 @@ static void chanset_mac_pre(const struct chanset_ctx *c)
 }
 
 /* ---------------------------------------------------------------------------------------------
+ * BW320: the background receiver (detector 2 on band 0's monitor chain)
+ * --------------------------------------------------------------------------------------------- */
+
+#define BGRX_BAND	MT7996_PHY_BAND_2G4
+#define BGRX_CHAIN	MT7996_PHY_MONITOR_CHAIN
+
+/* V:e00b0c48..V:e00b0c50, V:e00b0ca6..V:e00b0cae: the channel record's base is 6 GHz and its BW
+ * class 320 MHz. */
+static int bgrx_channel(const struct chanset_ctx *c)
+{
+	return c->base_khz == MT7996_CHSET_BASE_KHZ_6G && c->bw == MT7996_CHSET_BW320;
+}
+
+/* V:e00ca95e(0, 2, en): detector 2's AHB client (enable) and its interrupt enable. */
+static void bgrx_ahb_slot(uint32_t en)
+{
+	hal_wf(MT7996_PHY_AHB_CFG0(BGRX_BAND, MT7996_CHSET_BGRX_AHB_CLIENT), MT7996_PHY_AHB_CFG0_ENABLE, en);
+	hal_wf(MT7996_PHY_AHB_ISR(BGRX_BAND), MT7996_PHY_AHB_ISR_ENABLE(MT7996_CHSET_BGRX_AHB_CLIENT), en);
+}
+
+/* The ROM gate V:e00ecf32 asks first (ROM V:008393c0 -> patch V:00903f1a -> V:00901bac): 1 =
+ * detector 2 refused. Refused when die 0 is an MT7976C (0x79768a10, 0x79768b00) or when eFuse
+ * 0x471 reads 0xa (die 0 also serves band 1, adie.h); a failed eFuse read allows it. MediaTek
+ * reads the chip ID again (die 0 TOP 0x02c); radio_id has it. MediaTek's patch reads 0x471
+ * from die 0's A-die eFuse (logical read of block 0x070 behind TOP 0x144 / 0x108); here the
+ * ROM's read-only reader, as patch_init.c reads the same byte for die 0's band-1 role. */
+static int bgrx_refused(void)
+{
+	uint32_t id = radio_id.chip_id[MT7996_PHY_BAND_ADIE(BGRX_BAND)];
+	uint8_t sel;
+
+	if (id == ADIE_CHIP_ID_MT7976C_C || id == ADIE_CHIP_ID_MT7976C_B)
+		return 1;
+	if (hal_efuse8_soft(MT7996_EFUSE_7976_SEL, &sel))
+		return 0;
+	return sel == EFUSE_7976_SEL_BAND1;
+}
+
+static void chanset_bgrx_stop(const struct chanset_ctx *c)
+{
+	if (!bgrx_channel(c))
+		return;
+	/* V:e00ad640(0, 2) -> V:e00ed1a8(0, 2, 0): ROM halRdm enable (slot 0x0081bcf0) does nothing
+	 * for detector 2; the AHB client off. */
+	bgrx_ahb_slot(0);
+}
+
+static void chanset_bgrx_start(const struct chanset_ctx *c)
+{
+	uint32_t v0, v1;
+
+	if (!bgrx_channel(c))
+		return;
+	/* V:e00ad4de (rdmRddStart(0, 2, 0)) */
+	hal_wr(MT7996_WF_TOP_ON_SLPPROT_REQ2, WF_TOP_ON_SLPPROT_REQ2_RDD_START);
+	bgrx_ahb_slot(0);	/* V:e00ed1a8(0, 2, 0), as at the stop */
+	/* V:e00ecf32(0, 2, buffer, 0): the detector hardware start */
+	if (bgrx_refused())
+		return;
+	hal_wf(MT7996_PHY_RDD_TOP12(BGRX_BAND, MT7996_CHSET_BGRX_RDD), MT7996_PHY_RDD_TOP12_ANT_SEL, BGRX_CHAIN);
+	/* V:e00cad1a(0, 2, 1) */
+	hal_wf(MT7996_PHY_BN_CTRL0(BGRX_BAND), MT7996_PHY_BN_CTRL0_F28_24, MT7996_CHSET_BGRX_CTRL0_ON);
+	hal_wf(MT7996_PHY_BN_CTRL0(BGRX_BAND), MT7996_PHY_BN_CTRL0_F20_16, MT7996_CHSET_BGRX_CTRL0_ON);
+	hal_set(MT7996_PHY_AHB_CFG0(BGRX_BAND, MT7996_CHSET_BGRX_AHB_CLIENT), MT7996_PHY_AHB_CFG0_STALL_EN);
+	/* V:e00caa6e(.., 1), (.., 0) */
+	hal_set(MT7996_PHY_RST_CTRL(MT7996_CHSET_BGRX_RST_BAND), MT7996_PHY_RST_RDD);
+	hal_clr(MT7996_PHY_RST_CTRL(MT7996_CHSET_BGRX_RST_BAND), MT7996_PHY_RST_RDD);
+	/* V:e00ca89c, V:e00caa2a: the pulse window (whole words, MediaTek's read discarded) */
+	hal_rmw(MT7996_PHY_AHB_START(BGRX_BAND, MT7996_CHSET_BGRX_AHB_CLIENT), ~0u, MT7996_WM_SYSRAM_RDD2_BUF);
+	hal_rmw(MT7996_PHY_AHB_END(BGRX_BAND, MT7996_CHSET_BGRX_AHB_CLIENT), ~0u,
+		MT7996_WM_SYSRAM_RDD2_BUF + MT7996_WM_SYSRAM_RDD_BUF_SIZE);
+	/* GCI 0x360000 (CR_AHBBRG_AHB_ENABLE), ROM V:008299ca (stall, client 2), V:e00ca95e(0, 2, 1) */
+	hal_set(MT7996_PHY_AHB_TOP(BGRX_BAND), MT7996_PHY_AHB_TOP_ENABLE);
+	hal_set(MT7996_PHY_AHB_CFG0(BGRX_BAND, MT7996_CHSET_BGRX_AHB_STALL), MT7996_PHY_AHB_CFG0_STALL_EN);
+	bgrx_ahb_slot(1);
+	/* V:e0133a02(0, 0, 1, 0): both clock words read, then both written */
+	v0 = hal_rd(MT7996_PHY_BN_CLK0(BGRX_BAND));
+	v1 = hal_rd(MT7996_PHY_BN_CLK1(BGRX_BAND));
+	hal_wr(MT7996_PHY_BN_CLK0(BGRX_BAND), v0 | MT7996_PHY_BN_CLK_B8);
+	hal_wr(MT7996_PHY_BN_CLK1(BGRX_BAND), v1 | MT7996_PHY_BN_CLK_B8);
+	/* detector 2 (V:e00ed09a..): V:e00caca4(0, 2, 1) the monitor front-end enables */
+	hal_set(MT7996_PHY_BN_BGRX_EN(BGRX_BAND), MT7996_PHY_BN_BGRX_EN_ON);
+	hal_set(MT7996_PHY_BGRX_FE, MT7996_PHY_BGRX_FE_EN24);
+	hal_set(MT7996_PHY_BGRX_FE, MT7996_PHY_BGRX_FE_EN25);
+	hal_set(MT7996_PHY_BGRX_FE, MT7996_PHY_BGRX_FE_EN15);
+	hal_wf(MT7996_PHY_BGRX_FE, MT7996_PHY_BGRX_FE_F14_9, 0);	/* = !en */
+	hal_wr(MT7996_PHY_BN_BGRX(BGRX_BAND), MT7996_PHY_BN_BGRX_RDD2_INIT);
+	/* V:e00caf72: band 0's last RX stream count - 1 */
+	hal_wf(MT7996_PHY_BN_BGRX(BGRX_BAND), MT7996_PHY_BN_BGRX_6_4, bgrx_nrx - 1u);
+	hal_set(MT7996_PHY_BGRX_FE0, MT7996_PHY_BGRX_FE0_EN);	/* V:e00cac2a */
+	/* the monitor chain's gain: V:e00cab7c, V:e00cab98, V:e00cabc8, V:e00cabe2, V:e00cabfc */
+	hal_wf(MT7996_PHY_AGC_RFDGC(BGRX_BAND, BGRX_CHAIN), MT7996_PHY_AGC_RFDGC_A_GAIN, MT7996_CHSET_BGRX_RFDGC);
+	hal_set(MT7996_PHY_RXGAIN(BGRX_BAND, BGRX_CHAIN), MT7996_PHY_RXGAIN_A_EN);
+	hal_wf(MT7996_PHY_RXGAIN(BGRX_BAND, BGRX_CHAIN), MT7996_PHY_RXGAIN_A_LNA, MT7996_PHY_RXGAIN_LNA_UH);
+	hal_wf(MT7996_PHY_RXGAIN(BGRX_BAND, BGRX_CHAIN), MT7996_PHY_RXGAIN_A_LPF, MT7996_CHSET_BGRX_LPF);
+	hal_wf(MT7996_PHY_RXGAIN(BGRX_BAND, BGRX_CHAIN), MT7996_PHY_RXGAIN_A_LNA, MT7996_PHY_RXGAIN_LNA_UH);
+	hal_wf(MT7996_PHY_RXGAIN(BGRX_BAND, BGRX_CHAIN), MT7996_PHY_RXGAIN_A_LPF, MT7996_CHSET_BGRX_LPF);
+	hal_set(MT7996_PHY_AGC_CAGC(BGRX_BAND, BGRX_CHAIN), MT7996_PHY_AGC_CAGC_SW_EN);
+	hal_wf(MT7996_PHY_AGC_CAGC(BGRX_BAND, BGRX_CHAIN), MT7996_PHY_AGC_CAGC_SW_STATE,
+	       MT7996_CHSET_BGRX_CAGC_STATE);
+	/* V:e00cac62(0, 2, 1) */
+	hal_wf(MT7996_PHY_BGRX_307C(BGRX_BAND), MT7996_PHY_BGRX_307X_VAL, MT7996_CHSET_BGRX_307X_ON);
+	hal_wf(MT7996_PHY_BGRX_3078(BGRX_BAND), MT7996_PHY_BGRX_307X_VAL, MT7996_CHSET_BGRX_307X_ON);
+	hal_rmw(MT7996_PHY_CSI_CLK0(BGRX_BAND), ~0u, MT7996_CHSET_BGRX_CSI_CLK);
+	hal_rmw(MT7996_PHY_CSI_CLK1(BGRX_BAND), ~0u, MT7996_CHSET_BGRX_CSI_CLK);
+	hal_set(MT7996_PHY_BGRX_EN(BGRX_BAND), MT7996_PHY_BGRX_EN_ON);
+	/* V:e00caa8c(.., 1), V:e00cac46(.., 0), V:e00caa8c(.., 0) */
+	hal_set(MT7996_PHY_BGRX_5DF4(BGRX_BAND), MT7996_PHY_BGRX_5DF4_B30);
+	hal_set(MT7996_PHY_BGRX_5DF4(BGRX_BAND), MT7996_PHY_BGRX_5DF4_B31);
+	hal_clr(MT7996_PHY_RDD_2148(BGRX_BAND), MT7996_PHY_RDD_2148_B20);
+	hal_clr(MT7996_PHY_BGRX_5DF4(BGRX_BAND), MT7996_PHY_BGRX_5DF4_B30);
+	hal_clr(MT7996_PHY_BGRX_5DF4(BGRX_BAND), MT7996_PHY_BGRX_5DF4_B31);
+	/* V:e00caedc(0, 2, 1): the detector's interrupt enables */
+	hal_set(MT7996_PHY_MISC_CTRL(BGRX_BAND), MT7996_PHY_MISC_RDD1_WAKEUP);
+	hal_set(MT7996_PHY_MISC_CTRL(BGRX_BAND), MT7996_PHY_MISC_RDD1_ERROR);
+	if (bgrx_first_done)
+		return;
+	/* first use: V:e00caacc(0, 2, 1), V:e00cab5c(0, 2, 0xb0). (MediaTek then saves BGRX_CFG
+	 * [18:11] in WM RAM for another routine, V:e0133a5e: not read here.) */
+	hal_wf(MT7996_PHY_BGRX_CFG(BGRX_BAND), MT7996_PHY_BGRX_CFG_F6_4, 0);	/* = !en */
+	hal_wf(MT7996_PHY_RX_CTRL1(BGRX_BAND), MT7996_PHY_RX_CTRL1_IPI_EN, MT7996_CHSET_BGRX_IPI_EN);
+	hal_set(MT7996_PHY_BGRX_CFG(BGRX_BAND), MT7996_PHY_BGRX_CFG_B9);
+	hal_set(MT7996_PHY_BGRX_CFG(BGRX_BAND), MT7996_PHY_BGRX_CFG_B8);
+	hal_clr(MT7996_PHY_BGRX_CFG(BGRX_BAND), MT7996_PHY_BGRX_CFG_B7);	/* = !en */
+	hal_wf(MT7996_PHY_BGRX_CFG(BGRX_BAND), MT7996_PHY_BGRX_CFG_19_10, MT7996_CHSET_BGRX_CFG_19_10_FIRST);
+	hal_wf(MT7996_PHY_BGRX_CFG(BGRX_BAND), MT7996_PHY_BGRX_CFG_F29_20, 0);	/* = !en */
+	hal_wf(MT7996_PHY_BGRX_5DF4(BGRX_BAND), MT7996_PHY_BGRX_5DF4_F29_21, MT7996_CHSET_BGRX_5DF4_INIT);
+	hal_wf(MT7996_PHY_BGRX_CFG(BGRX_BAND), MT7996_PHY_BGRX_CFG_19_10, MT7996_CHSET_BGRX_CFG_19_10);
+	bgrx_first_done = 1;
+}
+
+/* ---------------------------------------------------------------------------------------------
  * After the channel flow
  * --------------------------------------------------------------------------------------------- */
 
@@ -1172,6 +1377,8 @@ static uint32_t bwcr_code(const struct chanset_ctx *c)
 		return MT7996_CHSET_BWCR_BW80;
 	case MT7996_CHSET_BW160:
 		return MT7996_CHSET_BWCR_BW160;
+	case MT7996_CHSET_BW320:
+		return MT7996_CHSET_BWCR_BW320;
 	}
 	return c->bw == MT7996_CHSET_BW40;	/* 20 / 40 MHz: MediaTek's width code (primary != centre) */
 }
@@ -1224,18 +1431,26 @@ static void ed_apply(uint32_t band, int wr, int32_t *t)
 
 static void chanset_mac_post(const struct chanset_ctx *c)
 {
-	uint32_t b = c->band, code = bwcr_code(c), i;
+	uint32_t b = c->band, code = bwcr_code(c), bw320 = c->bw == MT7996_CHSET_BW320, loc, i;
 	int32_t t[MT7996_CHSET_EDCCA_N] = { 0 };
 
+	loc = bw320 && c->ch && MT7996_CHSET_320_2(c->ch);
 	/* V:e00f07e2 */
 	hal_wf(MT7996_TMAC_TFCR0(b), TMAC_TFCR0_PRIM20M_CH, c->sec);
-	/* V:e00b193a + V:e00e5c9a */
+	/* V:e00e5c9a: BW320 first band 2's BN_MODE [8] (a fixed address) and TCR0 (V:e00d09ba) */
+	if (bw320) {
+		hal_wf(MT7996_PHY_BN_MODE(MT7996_PHY_BAND_6G), MT7996_PHY_BN_MODE_B8, loc);
+		hal_wf(MT7996_TMAC_TCR0(b), TMAC_TCR0_BW320M_LOC, loc);
+	}
 	hal_wf(MT7996_RATE_BWCR(b), RATE_BWCR_BW, code);
 	for (i = 0; i < MT7996_CHSET_TICKCR0_BANDS; i++) {
 		hal_wf(MT7996_WFSYS_ON_TICKCR0(i), WFSYS_ON_TICKCR0_WLAN_CLK_MODE, MT7996_CHSET_TICKCR0_MODE);
 		hal_wf(MT7996_WFSYS_ON_TICKCR0(i), WFSYS_ON_TICKCR0_LMAC_1X_MODE, MT7996_CHSET_TICKCR0_MODE);
 	}
 	hal_wf(MT7996_RMAC_CHFREQ(b), RMAC_CHFREQ_CH, chfreq(c));
+	/* V:e00f080a (V:e00b0d04: MediaTek's 320 MHz width code) */
+	if (bw320)
+		hal_wf(MT7996_TMAC_TCR0(b), TMAC_TCR0_BW320M_LOC, loc);
 	/* V:e00afca2, EDCCA region 0: read, minus MT7996_CHSET_EDCCA_OFS, written back */
 	ed_apply(b, 0, t);
 	for (i = 0; i < MT7996_CHSET_EDCCA_N; i++)
@@ -1292,6 +1507,8 @@ static uint32_t chanset_flow(const struct chanset_ctx *c, int sx)
 	/* the handler V:e00b103c / V:e00b0a74 before the channel flow */
 	if (flags & CHANSET_F_MAC)
 		chanset_mac_pre(c);
+	if (flags & CHANSET_F_BGRX)
+		chanset_bgrx_stop(c);
 
 	/* the channel flow V:e00d708a: per WF, item 1 (MT7977), the first gain-step pass */
 	for (wf = c->wf_first; wf <= c->wf_last; wf++) {
@@ -1312,8 +1529,14 @@ static uint32_t chanset_flow(const struct chanset_ctx *c, int sx)
 		gainstep_pass(c, wf, 0);
 
 	/* the handler after the flow */
+	if (flags & CHANSET_F_BGRX)
+		chanset_bgrx_start(c);
 	if (flags & CHANSET_F_MAC)
 		chanset_mac_post(c);
+	else if (c->base_khz == MT7996_CHSET_BASE_KHZ_2G4)
+		/* without the MAC words: band 0's RX chain count as MediaTek's SMPS step would have
+		 * written and read it back (RX_STREAM = the rx_path mask), for a later BW320 start */
+		bgrx_nrx = c->nss_rx < MT7996_CHSET_SMPS_COUNT_BITS ? c->nss_rx : MT7996_CHSET_SMPS_COUNT_BITS;
 	if (r != RADIO_OK || radio_failed())
 		return RADIO_ERR_HW;
 	return RADIO_OK;
@@ -1343,7 +1566,7 @@ uint32_t chanset_rate(uint32_t band, uint32_t bw)
 	struct chanset_ctx c;
 	uint32_t r;
 
-	if (band >= RADIO_BANDS || bw >= RADIO_NBW)
+	if (band >= RADIO_BANDS || bw >= MT7996_CHSET_NBW)
 		return RADIO_ERR_ARG;
 	if (!radio_id.identified || !radio_band[band].set)
 		return RADIO_ERR_ORDER;

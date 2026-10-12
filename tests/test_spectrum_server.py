@@ -409,7 +409,9 @@ class SpectrumServerTest(unittest.TestCase):
         ws.wait(lambda: self.controller(ws).get("state"), what="the controller's state")
         self.assertTrue(ws.hello["controller"])
         self.assertEqual([b["name"] for b in ws.hello["bands"]], ["2.4 GHz", "5 GHz", "6 GHz"])
-        self.assertEqual(ws.hello["sample_rates"], [40e6, 80e6, 160e6, 320e6])
+        self.assertEqual([(r["label"], r["sample_rate"], r["capture_rate"], r["bands"]) for r in ws.hello["rates"]],
+                         [("40", 40e6, 40e6, [0, 1, 2]), ("80", 80e6, 80e6, [0, 1, 2]), ("160", 160e6, 160e6, [0, 1, 2]),
+                          ("320", 320e6, 320e6, [0, 1, 2]), ("640/2", 320e6, 640e6, [2])])
         ws.wait(lambda: ws.status["receiver"]["lo"] == 5180e6 and ws.status["receiver"]["sample_rate"] == 40e6,
                 what="the controller's tuning in the status")
 
@@ -448,6 +450,8 @@ class SpectrumServerTest(unittest.TestCase):
         # A rate the radio does not have is refused before the controller sees it.
         ws.send({"t": "set", "band": 2, "sample_rate": 640e6})
         ws.wait_notice("sample_rate must be 40, 80, 160 or 320 Msps")
+        ws.send({"t": "set", "band": 1, "sample_rate": 320e6, "capture_rate": 640e6})
+        ws.wait_notice("the 5 GHz band has no 640/2")
 
         # Band and sample rate: a configure with progress, then a new rate at the same LO. The fake
         # radio stops and restarts the stream inside it, numbering from 0 again.
@@ -457,7 +461,7 @@ class SpectrumServerTest(unittest.TestCase):
         ws.send({"t": "set", "lo": 5200e6})
         ws.wait_notice("busy (configuring)")
         op = s.wait_op(lambda r: r["op"] == "configure")
-        self.assertEqual((op["band"], op["sample_rate"]), (1, 80000000))
+        self.assertEqual((op["band"], op["sample_rate"], op["capture_rate"]), (1, 80000000, 80000000))
         self.assertNotIn("channel", op)
         ws.wait(lambda: not self.controller(ws).get("busy") and ws.status["receiver"]["sample_rate"] == 80e6,
                 timeout=15, what="the configure to finish")

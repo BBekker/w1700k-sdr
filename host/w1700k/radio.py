@@ -16,11 +16,16 @@ FW_DIR = '/tmp/w1700k-fw'         # unit-side copies of the firmware set
 
 RF_BAND = {0: '2g', 1: '5g', 2: '6g'}
 RF_BAND_CODE = {'2g': 0, '5g': 1, '6g': 2}
-# Sample rates, every band: one ICAP path of 14-bit IQ at twice the radio's bandwidth class, which
-# is the code our firmware's SETUP / RATE take (20, 40, 80, 160 MHz). The 320 MHz class (band 2
-# only) captures 640 Msps, more than a stream carries, so it is not offered.
-RATE_CODE = {40_000_000: 0, 80_000_000: 1, 160_000_000: 2, 320_000_000: 3}
-SAMPLE_RATES = tuple(RATE_CODE)
+# Rates as (sample rate, capture rate), samples/s -> the bandwidth class our firmware's SETUP /
+# RATE take. Every band: one ICAP path of 14-bit IQ at twice the class (20, 40, 80, 160 MHz),
+# capture rate = sample rate; the decimation rolls off past ~60 % of Nyquist, signal and noise
+# alike (D293). Band 2 also has the 320 MHz class, "640/2": captured at 640 Msps, the stream keeps
+# every other sample; 320 Msps flat to about +-155 MHz, but signals 160..320 MHz from the LO fold
+# in at -2..-32 dB (D288, D292).
+RATE_CODE = {(40_000_000, 40_000_000): 0, (80_000_000, 80_000_000): 1, (160_000_000, 160_000_000): 2,
+             (320_000_000, 320_000_000): 3, (320_000_000, 640_000_000): 4}
+SAMPLE_RATES = tuple(sorted({sr for sr, _ in RATE_CODE}))
+HALF_640_BANDS = (2,)             # bands with the 320 MHz class
 # TUNE's reach per band (include/hw/adie/mt7976.h, mt7977.h *_LO_TUNE_*): a little beyond the
 # measured VCO limits. Each die's own lock edges lie inside; the controller finds them at load
 # (Controller.lo_lock). Any Hz in range, realised on the synthesizer's grid (actual_lo).
@@ -70,17 +75,23 @@ class BandConfig:
     band: int
     lo_hz: int
     sample_rate: int                      # samples/s, one of SAMPLE_RATES
+    capture_rate: int | None = None       # samples/s before the stream; None: the sample rate
 
     def validate(self):
         """This configuration, the LO as an int; raises ValueError if unsupported."""
         if self.band not in RF_BAND:
             raise ValueError(f'band {self.band}: 0, 1 or 2')
-        if self.sample_rate not in RATE_CODE:
-            raise ValueError(f'sample rate {", ".join(str(r // 1_000_000) for r in SAMPLE_RATES)} Msps')
+        cfg = replace(self, capture_rate=self.capture_rate or self.sample_rate)
+        code = RATE_CODE.get((cfg.sample_rate, cfg.capture_rate))
+        if code is None:
+            raise ValueError(f'sample rate {", ".join(str(r // 1_000_000) for r in SAMPLE_RATES)} Msps, '
+                             'or 320 Msps captured at 640 (640/2)')
+        if code == RATE_CODE[(320_000_000, 640_000_000)] and self.band not in HALF_640_BANDS:
+            raise ValueError('640/2 is band 2 only')
         lo, hi = LO_RANGE[self.band]
         if not lo <= int(self.lo_hz) <= hi:
             raise ValueError(f'band {self.band} tunes {lo / 1e9:.2f}-{hi / 1e9:.2f} GHz')
-        return replace(self, lo_hz=int(self.lo_hz))
+        return replace(cfg, lo_hz=int(self.lo_hz))
 
     @property
     def rf_band(self):
@@ -88,10 +99,10 @@ class BandConfig:
 
     @property
     def rate_code(self):
-        return RATE_CODE[self.sample_rate]
+        return RATE_CODE[(self.sample_rate, self.capture_rate or self.sample_rate)]
 
     def as_dict(self):
-        return {'lo_hz': self.lo_hz, 'sample_rate': self.sample_rate}
+        return {'lo_hz': self.lo_hz, 'sample_rate': self.sample_rate, 'capture_rate': self.capture_rate}
 
 
 # Initialised on every load; `configure` and `tune` change them.

@@ -10,15 +10,12 @@
  *                                SELECT band 1
  *   radio_smoke EEPROM commands  the same as the host sends it: BRINGUP, per band SETUP (with its
  *                                DCOC) and CAPTURE, the same RATEs and DCOC, then SELECT band 1
- *   radio_smoke EEPROM wide      BRINGUP and band 2's SETUP, then RATE, CAPTURE and SETUP of band 2
- *                                at the first class past 160 MHz (radio_cmd.h RADIO_NBW: 4, the
- *                                320 MHz class), each to be refused
  *   radio_smoke rfctl A B C ...  the RF command builder's program of each RF op {A, B, C}, with die
  *                                0's RC code set as a bring-up leaves it (RFCTL_RC_CODE)
  *   radio_smoke rfctl-uncal ...  the same before any bring-up (no RC code)
  *
  * Each band at its default (host/w1700k/radio.py DEFAULT_BANDS): band 0 at an LO of 2442 MHz and
- * 160 MHz, band 1 at 5250 MHz and 160 MHz, band 2 at 6105 MHz and 160 MHz.
+ * 160 MHz, band 1 at 5250 MHz and 160 MHz, band 2 at 6105 MHz and 320 MHz.
  *
  * Output of the radio modes: stdout is the mock's access log, with "# step NAME ARG" before each
  * command; stderr one line per command,
@@ -51,7 +48,7 @@ uint32_t radio_command(uint32_t op, const uint32_t *arg, uint32_t *state);
 static const struct {
 	uint64_t lo_hz;
 	uint32_t bw;
-} stock[RADIO_BANDS] = { { 2442000000ull, 3 }, { 5250000000ull, 3 }, { 6105000000ull, 3 } };
+} stock[RADIO_BANDS] = { { 2442000000ull, 3 }, { 5250000000ull, 3 }, { 6105000000ull, 4 } };
 
 #define RFCTL_RC_CODE	17u	/* die 0's RC-calibration code on unit A */
 
@@ -126,23 +123,6 @@ static int radio(const char *eeprom, int steps)
 	return mock_finish();
 }
 
-/* The wide mode. RATE and CAPTURE come first: a refused SETUP clears the band's set-up state, and
- * both would then refuse for the order instead. */
-static int wide(const char *eeprom)
-{
-	const uint32_t b = 2, lo = (uint32_t)stock[b].lo_hz, lo_hi = (uint32_t)(stock[b].lo_hz >> 32);
-
-	mock_open("-");
-	mock_eeprom(eeprom);
-	presets();
-	command("bringup", RADIO_OP_BRINGUP, 0, 0, 0, 0);
-	command("setup", RADIO_OP_SETUP, b, lo, lo_hi, stock[b].bw);
-	command("rate", RADIO_OP_RATE, b, RADIO_NBW, 0, 0);
-	command("capture", RADIO_OP_CAPTURE, b, RADIO_NBW, 0, 0);
-	command("setup", RADIO_OP_SETUP, b, lo, lo_hi, RADIO_NBW);
-	return mock_finish();
-}
-
 static int rfctl(int argc, char **argv, int cal)
 {
 	if (cal) {
@@ -169,10 +149,8 @@ int main(int argc, char **argv)
 		return rfctl(argc - 2, argv + 2, 1);
 	if (argc >= 2 && !strcmp(argv[1], "rfctl-uncal"))
 		return rfctl(argc - 2, argv + 2, 0);
-	if (argc == 3 && !strcmp(argv[2], "wide"))
-		return wide(argv[1]);
 	if (argc != 3 || (strcmp(argv[2], "steps") && strcmp(argv[2], "commands"))) {
-		fprintf(stderr, "usage: radio_smoke EEPROM steps|commands|wide, or radio_smoke rfctl A B C ...\n");
+		fprintf(stderr, "usage: radio_smoke EEPROM steps|commands, or radio_smoke rfctl A B C ...\n");
 		return 2;
 	}
 	return radio(argv[1], !strcmp(argv[2], "steps"));

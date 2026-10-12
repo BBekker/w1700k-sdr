@@ -3,8 +3,9 @@
 
     w1700k load [--band B]          load our firmware and bring the radio up, every band at its
                                     LO and sample rate (a few seconds)
-    w1700k band B [--rate MSPS] [--lo FREQ]
-                                    capture band B (at another sample rate or LO)
+    w1700k band B [--rate 40|80|160|320|640/2] [--lo FREQ]
+                                    capture band B (at another sample rate, Msps, or LO); 640/2:
+                                    band 2 captured at 640 Msps, every other sample streamed
     w1700k start                    stream (14-bit IQ raw up to 160 Msps, packed half above)
     w1700k stop
     w1700k status [--rf]            receiver state (--rf: read the active band's RF registers)
@@ -30,13 +31,16 @@ from pathlib import Path
 from . import config as config_mod
 from .config import REPO
 from .controller import Controller, serve
-from .radio import SAMPLE_RATES
+from .radio import RATE_CODE
 from .rf import FILTER_CODE
 from .unit import Unit
 
 CLIENTS = ('mt7996-probe', 'mt7996-download', 'mt7996-stream', 'mt7996-ctl')
 MODULE = 'w1700k_sdr.ko'
 DEV_DIR = '/tmp/w1700k'
+# --rate: '40'..'320' (captured at the sample rate) and '640/2' (radio.RATE_CODE)
+RATE_CHOICES = {(f'{sr // 1_000_000}' if sr == cr else f'{cr // 1_000_000}/{cr // sr}'): (sr, cr)
+                for sr, cr in RATE_CODE}
 
 
 def frequency(text):
@@ -82,7 +86,7 @@ def build_parser():
     p.add_argument('--band', type=int, choices=(0, 1, 2), help='band to capture afterwards')
     p = sub.add_parser('band', help='capture another band, sample rate or LO')
     p.add_argument('band', type=int, choices=(0, 1, 2))
-    p.add_argument('--rate', type=int, choices=[r // 1_000_000 for r in SAMPLE_RATES], help='Msps')
+    p.add_argument('--rate', choices=RATE_CHOICES, help='Msps; 640/2: band 2 at 640 Msps, every other sample')
     p.add_argument('--lo', type=frequency)
     sub.add_parser('start', help='start streaming')
     sub.add_parser('stop', help='stop streaming')
@@ -136,7 +140,8 @@ def run_command(controller, args):
     if command == 'load':
         controller.load(args.band)
     elif command == 'band':
-        controller.configure(args.band, None if args.rate is None else args.rate * 1_000_000, args.lo)
+        rate, capture = RATE_CHOICES.get(args.rate, (None, None))
+        controller.configure(args.band, rate, args.lo, capture)
     elif command == 'start':
         controller.start()
     elif command == 'stop':

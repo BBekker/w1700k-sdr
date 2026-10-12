@@ -70,11 +70,14 @@ transmit path stays disabled.
 
 Rates. The sample rate is twice the radio's bandwidth class (20, 40, 80 or
 160 MHz): 40 to 320 Msps on every band; at 160 MHz the radio gives two 320 Msps
-paths, and the stream carries one. Band 2's 320 MHz class is not used: its
-640 Msps does not fit the stream, and keeping every other sample aliased (a
-tone 180 MHz off the LO showed 22 dB over the floor at -140 MHz, through the
-320 MHz filter), where 320 Msps from the 160 MHz class has the same in-band SNR.
-Band 0 above 40 MHz is our set-up, MediaTek's 2.4 GHz tables ending there. The
+paths, and the stream carries one. Each class's decimation rolls off past about
+60 % of Nyquist (-19 dB at 94 %), signal and noise alike, so the edges lose
+level, not SNR. Band 2 also has the 320 MHz class: one 640 Msps path on its own
+IP's wide datapath, of which the capture keeps every other sample ("640/2",
+320 Msps): flat to about ±155 MHz, but signals 160–320 MHz from the LO fold in
+at -2 to -32 dB. The other bands have no wide datapath (each A-die is wired to
+its band) and deliver no data at that class; band 2 tunes 4.7–7.6 GHz, so 640/2
+covers band 1's range too. Band 0 above 40 MHz is our set-up, MediaTek's 2.4 GHz tables ending there. The
 LO and the analog filter are set apart from the rate, on every band.
 
 Throughput. 320 Msps × 32 bits is 1.28 GB/s from the radio. One 10 GbE link

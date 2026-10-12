@@ -96,7 +96,8 @@ class Controller:
         return {
             'busy': self.busy,
             'radio': {'loaded': self.loaded, 'band': self.band, 'rf_band': cfg.rf_band, 'lo_hz': cfg.lo_hz,
-                      'sample_rate': cfg.sample_rate, 'bands_ready': sorted(self.bands_ready),
+                      'sample_rate': cfg.sample_rate, 'capture_rate': cfg.capture_rate,
+                      'bands_ready': sorted(self.bands_ready),
                       'synth_locked': list(self.synth_locked)},
             'stream': {'running': self.packing is not None, 'packing': self.packing,
                        'sample_rate': cfg.sample_rate, 'center_hz': rfs['lo_hz']},
@@ -172,14 +173,18 @@ class Controller:
         """Download our firmware and bring the radio up from cold, every band at its LO and sample rate."""
         return self.run('loading', self._load, band)
 
-    def configure(self, band, sample_rate=None, lo_hz=None):
+    def configure(self, band, sample_rate=None, lo_hz=None, capture_rate=None):
         """Capture `band`, optionally at another sample rate (RATE) and LO (TUNE); what is not given
-        stays."""
+        stays. A sample rate alone is captured at that rate; band 2's 640/2 is 320 Msps captured
+        at 640 (radio.RATE_CODE)."""
         if band not in self.bands:
             raise ValueError('band 0, 1 or 2')
         cur = self.bands[band]
-        cfg = BandConfig(band, cur.lo_hz if lo_hz is None else int(lo_hz),
-                         cur.sample_rate if sample_rate is None else sample_rate).validate()
+        if sample_rate is None:
+            if capture_rate is not None:
+                raise ValueError('a capture rate needs its sample rate')
+            sample_rate, capture_rate = cur.sample_rate, cur.capture_rate
+        cfg = BandConfig(band, cur.lo_hz if lo_hz is None else int(lo_hz), sample_rate, capture_rate).validate()
         self._check_lock_range(band, cfg.lo_hz)
         return self.run('configuring', self._configure, cfg)
 
@@ -392,7 +397,7 @@ class Controller:
             self._load()
             return
         old = self.bands[b]
-        if cfg.sample_rate == old.sample_rate and b in self.bands_ready:
+        if cfg.rate_code == old.rate_code and b in self.bands_ready:
             # the band's rate unchanged: switch the capture (mid-stream when the running packing
             # carries that rate, else restarted with the packing it needs), then the LO alone if it
             # moved
@@ -418,7 +423,7 @@ class Controller:
             self.bands_ready.remove(b)
             self._save()
         self._set_rate(replace(cfg, lo_hz=old.lo_hz))
-        self.bands[b] = replace(old, sample_rate=cfg.sample_rate)
+        self.bands[b] = replace(old, sample_rate=cfg.sample_rate, capture_rate=cfg.capture_rate)
         self.bands_ready.append(b)
         self._command('select', b)
         self._save()
@@ -534,7 +539,8 @@ def handle(controller, request):
         controller.load(_require(request, 'band', int, optional=True))
     elif op == 'configure':
         controller.configure(_require(request, 'band', int), _require(request, 'sample_rate', int, True),
-                             _require(request, 'lo_hz', (int, float), True))
+                             _require(request, 'lo_hz', (int, float), True),
+                             _require(request, 'capture_rate', int, True))
     elif op == 'start':
         controller.start()
     elif op == 'stop':

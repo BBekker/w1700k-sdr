@@ -8,18 +8,18 @@
  *                                  the EEPROM must be in WM_RADIO_EE first
  *   SETUP band lo lo_hi bwf        the band at an LO and a bandwidth (chanset.h chanset): everything
  *                                  the receive-only channel set writes, from the LO (Hz, [31:0] and
- *                                  [63:32]) and bwf = bandwidth [7:0] (0 20, 1 40, 2 80, 3 160 MHz:
- *                                  the sample rate) | chanset.h CHANSET_F_* [15:8] |
+ *                                  [63:32]) and bwf = bandwidth [7:0] (0 20, 1 40, 2 80, 3 160,
+ *                                  4 320 MHz: the sample rate) | chanset.h CHANSET_F_* [15:8] |
  *                                  RADIO_CHAN_NO_DCOC; the synthesizer by TUNE's program; then the
  *                                  RX DC-offset calibration. No channel numbers; the analog filter
  *                                  is not part of it (RF command FILTER)
- *   RATE band bw                   the band's bandwidth alone (chanset.h chanset_rate; bw as SETUP)
- *                                  at its current LO: no synthesizer, no DCOC; LO and filter stay.
- *                                  CAPTURE again afterwards
+ *   RATE band bw                   the band's bandwidth alone (chanset.h chanset_rate) at its
+ *                                  current LO: no synthesizer, no DCOC; LO and filter stay. CAPTURE
+ *                                  again afterwards
  *   DCOC band                      the RX DC-offset calibration at the band's current LO, filter
  *                                  and gain (after a SETUP)
  *   CAPTURE band bw                the band's capture path as MediaTek's capture prime leaves it
- *                                  (after its channel set; bw as SETUP)
+ *                                  (after its channel set; bw 0..4 as CHANSET)
  *   SELECT band                    ICAP listens to the band (no stream on another band running)
  *   STREAM packing                 a stream (RADIO_PACKING_*): the route and ICAP0 armed, the WA
  *                                  started for packing, then the producer until the host's stop
@@ -50,7 +50,6 @@
 #define RADIO_CHAN_BW		0x000000ffu	/* SETUP arg 3 fields */
 #define RADIO_CHAN_FLAGS	0x0000ff00u
 #define RADIO_CHAN_NO_DCOC	0x00010000u
-#define RADIO_NBW		4u		/* bandwidth classes 0..3 (SETUP, RATE, CAPTURE) */
 
 /* Results */
 #define RADIO_OK		0u

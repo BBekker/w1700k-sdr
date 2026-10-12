@@ -393,6 +393,27 @@ class BandSwitch(ControllerTest):
                 self.ctl.configure(0, **bad)
         self.assertEqual(self.dev.radio_commands, [])
 
+    def test_half_640_on_band_2(self):
+        """640/2: RATE and CAPTURE at the 320 MHz class, the stream at 320 Msps, packed half; the
+        320 Msps class again is another RATE. Other bands refuse it before any command."""
+        self.loaded(2)
+        self.ctl.start()
+        self.ctl.configure(2, 320_000_000, capture_rate=640_000_000)
+        self.assertEqual(self.dev.radio_commands[1:], [('rate', (2, 4)), ('capture', (2, 4)), ('select', (2,)),
+                                                       ('stream', (1,))])
+        state = self.ctl.state()
+        self.assertEqual((state['radio']['sample_rate'], state['radio']['capture_rate'], state['stream']['packing']),
+                         (320_000_000, 640_000_000, 'half'))
+        self.dev.radio_commands.clear()
+        self.ctl.configure(2, 320_000_000)
+        self.assertEqual(self.dev.radio_commands[:2], [('rate', (2, 3)), ('capture', (2, 3))])
+        self.assertEqual(self.ctl.state()['radio']['capture_rate'], 320_000_000)
+        self.dev.radio_commands.clear()
+        for band in (0, 1):
+            with self.assertRaisesRegex(ValueError, 'band 2 only'):
+                self.ctl.configure(band, 320_000_000, capture_rate=640_000_000)
+        self.assertEqual(self.dev.radio_commands, [])
+
     def test_rate_alone(self):
         """Another sample rate is RATE + CAPTURE: the LO, the gain and the filter stay."""
         self.loaded(0)

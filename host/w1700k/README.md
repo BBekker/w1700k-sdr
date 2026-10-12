@@ -45,7 +45,7 @@ is written to the unit's flash or eFuses.
 | command | |
 |---|---|
 | `load [--band B]` | load our firmware, bring the radio up from cold, every band at its LO and sample rate; B captured (about 2 s) |
-| `band B [--rate MSPS] [--lo FREQ]` | capture band B; another sample rate (40, 80, 160, 320 Msps) or LO |
+| `band B [--rate RATE] [--lo FREQ]` | capture band B; another rate (40, 80, 160, 320 Msps, or `640/2` on band 2) or LO |
 | `start` | start streaming (packing follows the rate, see below) |
 | `stop` | stop streaming |
 | `status [--rf]` | the state below; `--rf` reads the active band's synthesizer, filter and gain |
@@ -77,7 +77,10 @@ analog filter. Defaults, all set by every load:
 - **Sample rate** 40, 80, 160 or 320 Msps on every band: the radio's 20/40/80/160 MHz bandwidth
   class (the code SETUP and RATE take), sampled at twice that. At 320 Msps the digital channel
   filter rolls off beyond about +-110 MHz, signal and noise alike (-9 dB at +130 MHz on band 2,
-  where the SNR stays that of mid-band). Raw 14-bit IQ fits one 10 GbE
+  where the SNR stays that of mid-band). **640/2** (band 2 only): the 320 MHz class, captured at
+  640 Msps, every other sample streamed: 320 Msps flat to about +-155 MHz, but signals 160..320 MHz
+  from the LO fold in at -2..-32 dB; the state reports it as `capture_rate` 640000000. The other
+  bands have no 640 Msps datapath. Raw 14-bit IQ fits one 10 GbE
   link up to 160 Msps; above that the stream is packed `half` (WM and WA pack half the chunks to
   28 bits, 8 samples in 7 words, lossless). The packing follows the rate; it is not a setting.
 - **Filter** 20..320 MHz at any sample rate, 320 by default, kept across LO and rate changes.
@@ -123,7 +126,7 @@ immediately; other requests run one at a time in order.
 |---|---|
 | `{"id":1,"op":"status"}` | |
 | `{"id":2,"op":"load","band":1}` | `band` optional |
-| `{"id":3,"op":"configure","band":2,"sample_rate":320000000,"lo_hz":6105000000}` | `sample_rate`, `lo_hz` optional; restarts a running stream for a new sample rate |
+| `{"id":3,"op":"configure","band":2,"sample_rate":320000000,"capture_rate":640000000,"lo_hz":6105000000}` | `sample_rate`, `capture_rate` (default: the sample rate; 640000000 with 320000000 is 640/2 on band 2), `lo_hz` optional; restarts a running stream for a new rate |
 | `{"id":4,"op":"start"}` | |
 | `{"id":5,"op":"stop"}` | |
 | `{"id":6,"op":"tune","hz":5300000000}` | the active band's LO, any Hz in its span |
@@ -137,6 +140,7 @@ stream that ends on its own (overrun, lost source) is reported as an error in ST
 ```json
 {"busy": null,
  "radio": {"loaded": true, "band": 1, "rf_band": "5g", "lo_hz": 5250000000, "sample_rate": 320000000,
+           "capture_rate": 320000000,
            "bands_ready": [0, 1, 2], "synth_locked": [true, true, true]},
  "stream": {"running": true, "packing": "half", "sample_rate": 320000000, "center_hz": 5250000000},
  "rf": {"lo_hz": 5250000000, "agc": true, "lna": null, "lpf": null, "filter_mhz": 320,

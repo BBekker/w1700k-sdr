@@ -48,16 +48,17 @@ later patches run. It loads on parts with unprovisioned security fuses.
   serves radio commands and runs the control interpreter (`stream/ctl.h`).
 - **Radio commands** (`radio/radio_cmd.h`), posted by the host in the status block and
   acknowledged there with a result, the first hardware failure and the time taken:
-  `BRINGUP` (the radio from cold), `SETUP band lo bw` (the band at an LO in Hz and a bandwidth of
-  20, 40, 80 or 160 MHz, 40 to 320 Msps: everything MediaTek's channel set wrote, computed from
-  those, the synthesizer by TUNE's own program, then the RX DC-offset calibration; no channel
-  numbers, no 320 MHz class), `RATE band bw` (the bandwidth alone: no synthesizer, no DCOC, LO
-  and filter kept), `DCOC band` (the DC-offset calibration at the current LO and filter),
-  `CAPTURE band bw` (the capture path and the MAC receive enable), `SELECT band`,
-  `STREAM packing` (acknowledged when the stream ends), and `STEP` for development. The LO
-  (TUNE: any Hz the synthesizer reaches, on its 2-LSB grid), the analog filter (FILTER), gain
-  and trim are RF commands of their own; the filter is independent of the bandwidth and no
-  SETUP or RATE touches it.
+  `BRINGUP` (the radio from cold), `SETUP band lo bw` (the band at an LO in Hz and a bandwidth
+  class: 20, 40, 80 or 160 MHz for 40 to 320 Msps, and on band 2 also 320 MHz, captured at
+  640 Msps of which the stream keeps every other sample;
+  everything MediaTek's channel set wrote, computed from those, the synthesizer by TUNE's own
+  program, then the RX DC-offset calibration; no channel numbers), `RATE band bw` (the bandwidth
+  alone: no synthesizer, no DCOC, LO and filter kept), `DCOC band` (the DC-offset calibration at
+  the current LO and filter), `CAPTURE band bw` (the capture path and the MAC receive enable),
+  `SELECT band`, `STREAM packing` (acknowledged when the stream ends), and `STEP` for
+  development. The LO (TUNE: any Hz the synthesizer reaches, on its 2-LSB grid), the analog filter
+  (FILTER), gain and trim are RF commands of their own; the filter is independent of the
+  bandwidth and no SETUP or RATE touches it.
 - **The radio code** (`radio/`, in a CRAM region at `0xe0040000`, above the ROM's download
   buffers): MediaTek's cold initialisation and channel set, decoded record for record against
   its traced cold load and written from the register headers (`include/hw/`), each module

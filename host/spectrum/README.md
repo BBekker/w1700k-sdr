@@ -69,7 +69,7 @@ then 30 s; the page shows it as down meanwhile, and requests that were queued ar
 |---|---|
 | run button | `start` or `stop` |
 | LO: the header display (wheel, click, keys, typing), the LO box, double-click on the plot | `tune` `hz`, refused outside the band's `rf.lo_range_hz`; any time the radio is loaded |
-| Band, Sample rate 40-320 Msps, then Apply | `configure` `band`, `sample_rate` (the LO stays) |
+| Band, Sample rate 40-320 Msps or 640/2 (band 2), then Apply | `configure` `band`, `sample_rate`, `capture_rate` (the LO stays) |
 | Filter 20-320 MHz | `filter` `mhz` |
 | Automatic gain control, LNA 0-4 (~6 dB steps), Baseband 0-9 (~2 dB steps) | `gain` `agc:true`, or `lna` and `lpf` |
 
@@ -107,11 +107,11 @@ are JSON text with a type `t`, plus binary spectrum frames.
 
 From the page: `ping {c}`, `ack {seq}` for every frame, `view {start, stop, bins, auto, fps,
 kbps}` (the range and resolution wanted, and pacing limits), `fft {size, window, rate,
-averaging, peak, dc}`, `set {...}` with any of `lo`; `band, sample_rate`; `filter`; `agc,
-lna, lpf`, and `run {on}`.
+averaging, peak, dc}`, `set {...}` with any of `lo`; `band, sample_rate, capture_rate`;
+`filter`; `agc, lna, lpf`, and `run {on}`.
 
-From the server: `hello {version, windows, max_bins, controller, bands, sample_rates,
-filters, max_lna, max_lpf}`, `status` (sections `state`, `message`, `running`, `devices`,
+From the server: `hello {version, windows, max_bins, controller, bands, rates {label,
+sample_rate, capture_rate, bands}, filters, max_lna, max_lpf}`, `status` (sections `state`, `message`, `running`, `devices`,
 `receiver {lo, sample_rate}`, `controller {mode, command, alive, pid,
 restarts, busy, progress, error, queued, state}`, `fft`, `spectrum`, `stream`, `link`; unchanged
 ones are left out), `notice {level, text}` and `pong`. A frame is a 48-byte little-endian header

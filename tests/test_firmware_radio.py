@@ -38,7 +38,6 @@ CHAN = lambda b: 1 << (20 + b)         # noqa: E731
 CAPTURE = lambda b: 1 << (24 + b)      # noqa: E731
 BROUGHT_UP = IDENTIFIED | PATCH_INIT | COMMON | POOL | POST | UP | sum(BAND(b) | RF(b) for b in range(3))
 CTL_BAD_ARG = 7                         # probe_page.h MT7996_PROBE_CTL_BAD_ARG
-ERR_ARG = 2                             # radio_cmd.h RADIO_ERR_ARG
 
 
 def synthetic_eeprom():
@@ -259,16 +258,6 @@ class RadioCode(unittest.TestCase):
             self.assertEqual(p['out'], 16)
         uncal = self.rfctl((rf.RF_FILTER, 160, 0), (rf.RF_FILTER | 2 << 8, 320, 0), mode='rfctl-uncal')
         self.assertEqual([p['res'] for p in uncal], [CTL_BAD_ARG, 0])
-
-    def test_no_320mhz_class(self):
-        """Bandwidth classes 0..3 only (radio_cmd.h RADIO_NBW): band 2's RATE, CAPTURE and SETUP at
-        class 4, MediaTek's 320 MHz class, are refused as a bad argument, with nothing written."""
-        run = self.load('wide')
-        self.assertTrue(run['tail'].startswith('OK '), run['tail'])
-        self.assertEqual([(r['name'], r['arg'], r['res'], r['fail']) for r in run['results']],
-                         [('bringup', 0, 0, (0, 0, 0)), ('setup', 2, 0, (0, 0, 0))] +
-                         [(name, 2, ERR_ARG, (0, 0, 0)) for name in ('rate', 'capture', 'setup')])
-        self.assertEqual([lines for _, _, lines in run['segments'][2:]], [[], [], []])
 
     def test_rate_keeps_lo_and_filter(self):
         """RATE re-runs the bandwidth part of the channel set only: no synthesizer word, no filter

@@ -714,8 +714,9 @@ function onStatus(m) {
     showFrequency();
     if (r) {
         const radio = radioState()?.radio;
-        $('span').textContent = `${r.sample_rate / 1e6} Msps` + (radio && radio.loaded
-            ? ` · ${RF_NAMES[radio.rf_band] || ''}` : '');
+        const half = radio && radio.loaded && radio.capture_rate && radio.capture_rate !== radio.sample_rate;
+        $('span').textContent = `${r.sample_rate / 1e6} Msps` + (half ? ` (${rateLabel(radio)})` : '') +
+            (radio && radio.loaded ? ` · ${RF_NAMES[radio.rf_band] || ''}` : '');
     }
 
     if (!link.replaced) showMessage(s.state === 'waiting' ? s.message : '');
@@ -1022,23 +1023,35 @@ function setReceiver(name, fields, immediate) {
 // The band and sample rate being edited, kept until the radio has them. (The LO is set on its own.)
 let draft = null;
 
+// The server's rates: {label, sample_rate, capture_rate, bands}; 640/2 is band 2's only.
+function rateInfo(label) { return hello?.rates?.find((r) => r.label === label); }
+function rateLabel(c) {
+    const capture = c.capture_rate || c.sample_rate;
+    return hello?.rates?.find((r) => r.sample_rate === c.sample_rate && r.capture_rate === capture)?.label ||
+        String(c.sample_rate / 1e6);
+}
+function rateOnBand(label, band) { return !!rateInfo(label)?.bands.includes(band); }
+
 function formConfig() {
-    const on = $('rate').querySelector('button.on');
-    return {band: Number($('band').value), sample_rate: on ? Number(on.dataset.v) * 1e6 : null};
+    const on = $('rate').querySelector('button.on'), r = on ? rateInfo(on.dataset.v) : null;
+    return {band: Number($('band').value), sample_rate: r ? r.sample_rate : null, capture_rate: r ? r.capture_rate : null};
 }
 
 function radioConfig() {
     const r = radioState()?.radio;
-    return r && r.loaded ? {band: r.band, sample_rate: r.sample_rate} : null;
+    return r && r.loaded ? {band: r.band, sample_rate: r.sample_rate, capture_rate: r.capture_rate || r.sample_rate} : null;
 }
 
 function applied(want, have) {
-    return !!have && want.band === have.band && want.sample_rate === have.sample_rate;
+    return !!have && want.band === have.band && want.sample_rate === have.sample_rate &&
+        want.capture_rate === have.capture_rate;
 }
 
 function bandInfo(index) { return hello?.bands?.find((b) => b.band === index); }
 
 function editConfig() {
+    const on = $('rate').querySelector('button.on'), band = Number($('band').value);
+    if (on && !rateOnBand(on.dataset.v, band)) showSegmented('rate', '320');   // 640/2 is band 2's only
     draft = formConfig();
     showConfigNote();
     enableControls();
@@ -1051,7 +1064,10 @@ function showConfigNote() {
         return;
     }
     const band = bandInfo(c.band);
-    let text = `${band ? band.name : `Band ${c.band}`} at ${c.sample_rate / 1e6} Msps.`;
+    let text = `${band ? band.name : `Band ${c.band}`} at ${c.sample_rate / 1e6} Msps` +
+        (c.capture_rate && c.capture_rate !== c.sample_rate
+            ? `, every other sample of ${c.capture_rate / 1e6}: flat to about ±155 MHz, signals 160–320 MHz away fold in.`
+            : '.');
     if (draft && !applied(draft, radioConfig())) text += ' Not applied yet.';
     $('configure-note').textContent = text;
 }
@@ -1109,7 +1125,7 @@ function showReceiver(s) {
         const config = radioConfig();
         if (!draft && config) {
             showValue($('band'), config.band);
-            showSegmented('rate', config.sample_rate / 1e6);
+            showSegmented('rate', rateLabel(config));
         }
         const rf = st.rf || {};
         showSegmented('filter', rf.filter_mhz);
@@ -1145,8 +1161,8 @@ function enableControls() {
         for (const b of $('filter').querySelectorAll('button')) b.disabled = !rf;
         $('agc').disabled = !rf;
         $('lna').disabled = $('lpf').disabled = !rf || $('agc').checked;
-        for (const b of $('rate').querySelectorAll('button'))
-            b.disabled = !hello?.sample_rates?.includes(Number(b.dataset.v) * 1e6);
+        const band = Number($('band').value);
+        for (const b of $('rate').querySelectorAll('button')) b.disabled = !rateOnBand(b.dataset.v, band);
         const changed = !!draft && !applied(draft, radioConfig());
         $('configure').disabled = !changed;
         $('configure').classList.toggle('changed', changed);

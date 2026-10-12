@@ -36,9 +36,11 @@
 
 #define NELEM(a)	(sizeof(a) / sizeof((a)[0]))
 
-/* Channel bandwidth (chanset.h 0..3) -> u4BW (spectrum_cmd.h). */
+/* Channel bandwidth (chanset.h 0..4) -> u4BW (spectrum_cmd.h): 320 MHz is
+ * u4BW 5, one 640 Msps stream. */
 static const uint8_t u4bw_of[] = {
 	MT7996_SPECTRUM_BW_20, MT7996_SPECTRUM_BW_40, MT7996_SPECTRUM_BW_80, MT7996_SPECTRUM_BW_160,
+	MT7996_SPECTRUM_BW_320,
 };
 
 /* MediaTek's record of the node: column 1 is used on PHY index 1, column 0 on the others. */
@@ -48,14 +50,13 @@ static const uint8_t node_rate[] = { MT7996_CAPNODE_STOCK_RATE(COL) };	/* by u4B
 static const uint8_t node_act[] = { MT7996_CAPNODE_STOCK_ACT(COL) };
 
 _Static_assert(MT7996_CAPNODE_STOCK_KEY == MT7996_CAPSETUP_NODE, "the record is the prime's node");
-_Static_assert(NELEM(u4bw_of) == RADIO_NBW, "a u4BW for every bandwidth class");
-_Static_assert(NELEM(node_rate) > MT7996_SPECTRUM_BW_160, "a rate byte for every u4BW of u4bw_of");
+_Static_assert(NELEM(node_rate) == MT7996_SPECTRUM_BW_320 + 1u, "a rate byte for every u4BW");
 /* A domain-0 node: SEL0 / RATE0 / ACT0 of DFE MUX, the domain-6 select cleared. */
 _Static_assert(HW_GET(MT7996_DFE_NODE_DOMAIN, MT7996_CAPSETUP_NODE) == 0u, "domain-0 node");
 #define ACT_IS_D0(i, v)	_Static_assert((v) == MT7996_DFE_MODE_DOMAIN0, "activation 0x11 -> MUX ACT0");
 MT7996_CAPNODE_STOCK_ACT(ACT_IS_D0)
-/* Category 2, config 4: the default lane word at every u4BW but 5 (capture_setup.h "Lane word"), so
- * at every one of u4bw_of. */
+/* Category 2, config 4: lane table 1 (LANE_640M) at u4BW 5, the default word at every other u4BW
+ * (capture_setup.h "Lane word"). */
 _Static_assert(HW_GET(MT7996_DFE_NODE_CATEGORY, MT7996_CAPSETUP_NODE) == 2u &&
 	       HW_GET(MT7996_DFE_NODE_CONFIG, MT7996_CAPSETUP_NODE) == 4u, "the stock node's lane rule");
 /* An event is given: CAPTRIG [19] set, [15:8] = 1, the event word written. */
@@ -87,7 +88,8 @@ uint32_t capture_setup(uint32_t band, uint32_t bw)
 	hal_clr(MT7996_PHY_WFCOMM_3008(band), MT7996_PHY_WFCOMM_3008_CAP_CLR);
 	hal_wf(MT7996_PHY_CAPTRIG_CFG(band), MT7996_PHY_CAPTRIG_CFG_SEL, MT7996_PHY_CAPTRIG_CFG_SEL_CAPTURE);
 	hal_wf(MT7996_DFE_CAP_MODE(band), MT7996_DFE_CAP_MODE_CODE, node_act[col]);
-	hal_wr(MT7996_DFE_CAP_LANE(band), MT7996_DFE_CAP_LANE_FW_DEFAULT);
+	hal_wr(MT7996_DFE_CAP_LANE(band),
+	       u4bw == MT7996_SPECTRUM_BW_320 ? MT7996_DFE_CAP_LANE_640M : MT7996_DFE_CAP_LANE_FW_DEFAULT);
 
 	/* The node's DFE mux fields, V:e012e5d2. */
 	hal_wf(MT7996_DFE_CAP_MUX(band), MT7996_DFE_CAP_MUX_SEL0, node_sel[col]);

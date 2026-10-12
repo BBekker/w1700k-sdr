@@ -20,7 +20,7 @@
 #include "radio.h"
 #include "radio_cmd.h"
 
-/* bw: 0..3 = 20 / 40 / 80 / 160 MHz (chanset.h), the band's channel bandwidth.
+/* bw: 0..4 = 20 / 40 / 80 / 160 / 320 MHz (chanset.h), the band's channel bandwidth.
  * RADIO_OK; RADIO_ERR_ARG (band or bw out of range, nothing done); RADIO_ERR_HW (an access failed:
  * the failure record). */
 uint32_t capture_setup(uint32_t band, uint32_t bw);

@@ -210,7 +210,7 @@ class FakeDevice:
         elif name == 'setup':
             band, lo, hi, bwf = a
             hz = hi << 32 | lo
-            if band > 2 or bwf & 0xFF > 3 or not radio.LO_RANGE[band][0] <= hz <= radio.LO_RANGE[band][1]:
+            if band > 2 or bwf & 0xFF > (3 if band == 0 else 4) or not radio.LO_RANGE[band][0] <= hz <= radio.LO_RANGE[band][1]:
                 return RADIO_ERR_ARG
             if not state & UP:
                 return RADIO_ERR_ORDER
@@ -220,7 +220,7 @@ class FakeDevice:
             self.sx_status[band] = self.unlocking.get(band, self.sx_status[band])
         elif name == 'rate':                          # the sample rate alone: LO and filter stay
             band, bw = a[:2]
-            if band > 2 or bw > 3:
+            if band > 2 or bw > (3 if band == 0 else 4):
                 return RADIO_ERR_ARG
             if not state & CHAN(band):
                 return RADIO_ERR_ORDER

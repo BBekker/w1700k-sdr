@@ -18,9 +18,14 @@ class Bands(unittest.TestCase):
         self.assertEqual(BandConfig(0, 2_442_000_000.0, 80_000_000).validate().lo_hz, 2_442_000_000)
         self.assertEqual(BandConfig(0, 2_441_000_123, 320_000_000).validate().rate_code, 3)
         self.assertEqual(BandConfig(1, 4_650_000_000, 40_000_000).validate().as_dict(),
-                         {'lo_hz': 4_650_000_000, 'sample_rate': 40_000_000})
+                         {'lo_hz': 4_650_000_000, 'sample_rate': 40_000_000, 'capture_rate': 40_000_000})
+        half = BandConfig(2, 6_105_000_000, 320_000_000, 640_000_000).validate()      # 640/2
+        self.assertEqual((half.rate_code, half.sample_rate, half.capture_rate), (4, 320_000_000, 640_000_000))
         # outside TUNE's reach (radio.LO_RANGE); the span a unit locks is the controller's (lo_lock)
         for bad in (BandConfig(2, 6_105_000_000, 640_000_000), BandConfig(1, 5_250_000_000, 20_000_000),
+                    BandConfig(1, 5_250_000_000, 320_000_000, 640_000_000),    # 640/2: band 2 only
+                    BandConfig(0, 2_442_000_000, 320_000_000, 640_000_000),
+                    BandConfig(2, 6_105_000_000, 160_000_000, 640_000_000),
                     BandConfig(0, 2_069_999_999, 40_000_000), BandConfig(0, 2_750_000_001, 40_000_000),
                     BandConfig(1, 4_639_999_999, 40_000_000), BandConfig(2, 8_000_000_001, 40_000_000),
                     BandConfig(3, 5_250_000_000, 40_000_000)):
@@ -43,7 +48,9 @@ class Bands(unittest.TestCase):
                          {0: (2_442_000_000, 320_000_000), 1: (5_250_000_000, 320_000_000),
                           2: (6_105_000_000, 320_000_000)})
         # radio_cmd.h SETUP / RATE bandwidth classes 20 / 40 / 80 / 160 MHz
-        self.assertEqual(radio.RATE_CODE, {40_000_000: 0, 80_000_000: 1, 160_000_000: 2, 320_000_000: 3})
+        self.assertEqual(radio.RATE_CODE, {(40_000_000, 40_000_000): 0, (80_000_000, 80_000_000): 1,
+                                           (160_000_000, 160_000_000): 2, (320_000_000, 320_000_000): 3,
+                                           (320_000_000, 640_000_000): 4})
 
     def test_eeprom_file(self):
         data = bytes(range(256)) * 30 + b'\xff' * (16384 - 7680)

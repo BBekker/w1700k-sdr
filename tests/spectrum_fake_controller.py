@@ -27,7 +27,8 @@ RF_BAND = {0: "2g", 1: "5g", 2: "6g"}
 DEFAULT_LO = {0: 2442000000, 1: 5180000000, 2: 6105000000}   # each band's LO until tuned
 
 
-SAMPLE_RATES = (40000000, 80000000, 160000000, 320000000)
+RATES = {(40000000, 40000000): (0, 1, 2), (80000000, 80000000): (0, 1, 2), (160000000, 160000000): (0, 1, 2),
+         (320000000, 320000000): (0, 1, 2), (320000000, 640000000): (2,)}   # (sample, capture): bands
 
 
 def packing_for(rate):
@@ -44,6 +45,7 @@ class Controller:
         self.state = {
             "busy": None,
             "radio": {"loaded": True, "band": 1, "rf_band": "5g", "lo_hz": self.lo[1], "sample_rate": 40000000,
+                      "capture_rate": 40000000,
                       "bands_ready": [0, 1, 2]},
             "stream": {"running": False, "packing": None, "sample_rate": 40000000, "center_hz": self.lo[1]},
             "rf": {"lo_hz": self.lo[1], "agc": True, "lna": None, "lpf": None, "filter_mhz": 20,
@@ -115,8 +117,9 @@ class Controller:
 
     def op_configure(self, request):
         band, rate = int(request["band"]), int(request["sample_rate"])
-        if rate not in SAMPLE_RATES:
-            raise ValueError("sample rate: 40, 80, 160 or 320 Msps")
+        capture = int(request.get("capture_rate") or rate)
+        if band not in RATES.get((rate, capture), ()):
+            raise ValueError("sample rate: 40, 80, 160 or 320 Msps; 640/2 on band 2")
         if request.get("lo_hz") is not None:
             self.lo[band] = int(request["lo_hz"])
         was_running = self.state["stream"]["running"]
@@ -127,7 +130,8 @@ class Controller:
             self.emit({"event": "progress", "text": text, "fraction": step / 3})
             time.sleep(self.delay)
         lo = self.lo[band]
-        self.state["radio"].update(loaded=True, band=band, rf_band=RF_BAND[band], lo_hz=lo, sample_rate=rate)
+        self.state["radio"].update(loaded=True, band=band, rf_band=RF_BAND[band], lo_hz=lo, sample_rate=rate,
+                                   capture_rate=capture)
         self.state["stream"].update(sample_rate=rate, center_hz=lo, running=was_running,
                                     packing=packing_for(rate) if was_running else None)
         self.state["rf"].update(lo_hz=lo, lo_range_hz=LO_RANGE[band])   # the filter stays

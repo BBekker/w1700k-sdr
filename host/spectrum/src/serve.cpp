@@ -51,9 +51,19 @@ struct Band {
     const char *name;
 };
 const std::vector<Band> kBands = {{0, "2.4 GHz"}, {1, "5 GHz"}, {2, "6 GHz"}};
-// Sample rates, samples/s, and analog filter widths, MHz: on every band, each independent of the
-// other and of the LO.
-const std::vector<double> kRates = {40e6, 80e6, 160e6, 320e6};
+// Rates: the stream's sample rate and the radio's capture rate, samples/s, and the bands that have
+// them. 640/2 captures 640 Msps on band 2 and streams every other sample: flat to about +-155 MHz,
+// but signals 160..320 MHz from the LO fold in. Analog filter widths, MHz: on every band. Rate,
+// filter and LO are independent of each other.
+struct Rate {
+    const char *label;
+    double sample_rate, capture_rate;
+    std::vector<int> bands;
+};
+const std::vector<Rate> kRates = {
+    {"40", 40e6, 40e6, {0, 1, 2}},     {"80", 80e6, 80e6, {0, 1, 2}}, {"160", 160e6, 160e6, {0, 1, 2}},
+    {"320", 320e6, 320e6, {0, 1, 2}}, {"640/2", 320e6, 640e6, {2}},
+};
 const std::vector<unsigned> kFilters = {20, 40, 80, 160, 320};
 constexpr int kMaxLna = 4, kMaxLpf = 9;                          // gain steps: ~6 dB and ~2 dB
 
@@ -257,12 +267,18 @@ private:
     void set_configuration(const JsonValue &m)
     {
         const int band = integer_field(m, "band", 0, int(kBands.size()) - 1);
-        const double rate = m.number_or("sample_rate", NAN);
-        if (std::find(kRates.begin(), kRates.end(), rate) == kRates.end())
-            throw std::runtime_error("sample_rate must be 40, 80, 160 or 320 Msps");
+        const double rate = m.number_or("sample_rate", NAN), capture = m.number_or("capture_rate", rate);
+        const auto r = std::find_if(kRates.begin(), kRates.end(), [&](const Rate &x) {
+            return x.sample_rate == rate && x.capture_rate == capture;
+        });
+        if (r == kRates.end())
+            throw std::runtime_error("sample_rate must be 40, 80, 160 or 320 Msps (640/2: 320 captured at 640)");
+        if (std::find(r->bands.begin(), r->bands.end(), band) == r->bands.end())
+            throw std::runtime_error(std::string("the ") + kBands[size_t(band)].name + " band has no " + r->label);
         require_idle();
         controller_->submit({{"configure",
-                              ",\"band\":" + std::to_string(band) + ",\"sample_rate\":" + json_number(rate),
+                              ",\"band\":" + std::to_string(band) + ",\"sample_rate\":" + json_number(rate) +
+                                  ",\"capture_rate\":" + json_number(capture),
                               [this] { begin_tuning_op(); },
                               [this](const std::string &error) { end_tuning_op("configure", error); }}});
     }
@@ -393,13 +409,19 @@ private:
         for (const Band &b : kBands)
             bands += std::string(bands.empty() ? "" : ",") + "{\"band\":" + std::to_string(b.index) +
                      ",\"name\":" + json_quote(b.name) + "}";
-        for (double r : kRates) rates += (rates.empty() ? "" : ",") + json_number(r);
+        for (const Rate &r : kRates) {
+            std::string bands_of;
+            for (int b : r.bands) bands_of += (bands_of.empty() ? "" : ",") + std::to_string(b);
+            rates += std::string(rates.empty() ? "" : ",") + "{\"label\":" + json_quote(r.label) +
+                     ",\"sample_rate\":" + json_number(r.sample_rate) + ",\"capture_rate\":" +
+                     json_number(r.capture_rate) + ",\"bands\":[" + bands_of + "]}";
+        }
         for (unsigned w : kFilters) filters += (filters.empty() ? "" : ",") + std::to_string(w);
         web_.send_text(client, "{\"t\":\"hello\",\"version\":" + std::to_string(kProtocolVersion) +
                                    ",\"client\":" + std::to_string(client) + ",\"windows\":[" + windows +
                                    "],\"max_bins\":" + std::to_string(kMaxBins) +
                                    ",\"controller\":" + (controller_ ? "true" : "false") + ",\"bands\":[" + bands +
-                                   "],\"sample_rates\":[" + rates + "],\"filters\":[" + filters + "],\"max_lna\":" + std::to_string(kMaxLna) +
+                                   "],\"rates\":[" + rates + "],\"filters\":[" + filters + "],\"max_lna\":" + std::to_string(kMaxLna) +
                                    ",\"max_lpf\":" + std::to_string(kMaxLpf) + "}");
         send_status(client, viewer_, status_sections());
     }
