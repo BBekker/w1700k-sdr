@@ -3,7 +3,7 @@
 
 It models the console states (stock U-Boot, the dumper, our loader, the
 restorer, Linux), RAM, the loader partition, the stock environment, the UBI
-volumes and, for the restorer, the vendor-logical NAND data well enough that
+volumes and the vendor-logical NAND data well enough that
 installation, update and restore runs can execute end to end, and it records
 every command it was given. Images are recognised by a marker after the FIT
 magic.
@@ -15,6 +15,7 @@ import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'init'))
+from initkit.config import partitions  # noqa: E402
 from initkit.uart import MUTATING  # noqa: E402
 
 PROMPTS = {'stock': 'ECNT> ', 'dumper': 'dumper> ', 'loader': 'SDR loader> ',
@@ -54,8 +55,14 @@ class Refused(Exception):
 
 class FakeUnit:
     def __init__(self, served, chip_bytes=0x420000, installed=False,
-                 translation='vendor BBT/BMT'):
+                 translation='vendor BBT/BMT', part=partitions.KV, stock_pool=None):
         self.served = Path(served)
+        self.part = part
+        # The vendor pool our U-Boots compute, and the one stock prints at boot.
+        self.pool = min(250, part.blocks * 8 // 100)
+        self.stock_pool = stock_pool or self.pool
+        self.probed = False            # our U-Boots name the part at the first probe
+        self.detached = False          # the dumper's bmtdetach
         self.state = 'off'
         self.env = {'bootcmd': STOCK_BOOTCMD, 'ethaddr': '00:aa:bb:01:23:40'}
         self.saved = dict(self.env)
@@ -64,12 +71,13 @@ class FakeUnit:
         self.ubi = {'system': {}, 'durable': {}}
         self.attached = None
         self.erased = []
+        self.created = {}              # partition: [(volume, size, type, id)]
         self.log = []                  # (state, command)
         self.chip_bytes = chip_bytes
         self.translation = translation
         self.allow_mutating = False
         self.buffer = ''
-        # The vendor-logical NAND data the restorer reads and writes.
+        # The vendor-logical NAND data: the dumper reads it, the restorer rewrites it.
         self.nand = bytearray(b'\xff' * chip_bytes)
         self.nand[0x400000:0x400000 + len(IDENTITY)] = IDENTITY
         self.nand[0x405000:0x405000 + len(CALIBRATION)] = CALIBRATION
@@ -130,8 +138,6 @@ class FakeUnit:
     def send_async(self, line):
         self.check_command(line)
         self.log.append((self.state, line))
-        if line == '':
-            return
         if line in ('reset', 'reboot -f'):
             self.state = 'rebooting'
         elif line.startswith('bootm '):
@@ -162,6 +168,8 @@ class FakeUnit:
         self.env = dict(self.saved)
         self.ram = {}
         self.attached = None
+        self.probed = self.detached = False
+        self.buffer += f'bmt pool size: {self.stock_pool} \r\nBMT & BBT Init Success \r\n'
         self.state = 'stock'
 
     def bootm(self, address, line):
@@ -289,6 +297,7 @@ class FakeUnit:
     def stock_flash(self, line, words):
         action, offset, length = words[1], int(words[2], 16), int(words[3], 16)
         assert offset == 0x600000, 'stock wrote outside the loader slot'
+        assert not length % self.part.block, 'stock was given a part of a block'
         if action == 'erase':
             self.loader_slot = b'\xff' * length
         elif action == 'write':
@@ -306,20 +315,53 @@ class FakeUnit:
         self.saved = dict(self.env)
         return 'Saving Environment to ECNT Flash...', 0
 
+    def probe_line(self):
+        """shared U-Boot patch 0006, printed once per boot at the first probe."""
+        if self.probed:
+            return ''
+        self.probed = True
+        part = self.part
+        line = (f'spi-nand: {part.id.hex(" ")}, 512 MiB, {part.block >> 10} KiB blocks of '
+                f'64 x ({part.page} + {part.oob}) bytes\n')
+        if self.translation != 'none':
+            line += (f'airoha-bmt: attached (system_blocks={part.blocks - self.pool}, '
+                     f'pool={self.pool}, bbt=0, bmt=0); markbad refused\n')
+        return line
+
+    def geometry(self):
+        return (f'  - block size: {self.part.block:#x} bytes\n'
+                f'  - min I/O: {self.part.page:#x} bytes\n'
+                f'  - OOB size: {self.part.oob} bytes\n')
+
+    def raw_image(self, size):
+        """What `mtd read.raw.oob` returns: every main area, then every OOB."""
+        pages = size // self.part.page
+        main = bytes((index * 31 + 7) & 0xff for index in range(size))
+        return main + bytes((index * 3 + 1) & 0xff for index in range(pages * self.part.oob))
+
     def dumper_mtd(self, line, words):
         if words[1] == 'list':
-            return (f'* spi-nand0\n  - flags: 0x0 (read-only)\n'
-                    f'  - translation: {self.translation}\n  - min I/O: 0x800 bytes\n'
-                    f'  - OOB size: 128 bytes\n'
+            translation = 'none' if self.detached else self.translation
+            return (f'{self.probe_line()}* spi-nand0\n  - flags: 0x0 (read-only)\n'
+                    f'  - translation: {translation}\n{self.geometry()}'
                     f'  - 0x000000000000-0x{self.chip_bytes:012x} : "spi-nand0"'), 0
+        if words[1] == 'read.raw.oob.dontskipbad':
+            assert self.detached or self.translation == 'none', 'a raw dump of a translated chip'
+            offset, length = int(words[4], 16), int(words[5], 16)
+            assert offset == 0 and length == self.chip_bytes, line
+            self.ram[int(words[3], 16)] = self.raw_image(length)
+            return f'Reading {length:#x} byte(s) [raw] [oob]', 0
         if words[1] == 'read.dontskipbad':
             offset, length = int(words[4], 16), int(words[5], 16)
-            data = bytearray(b'\xff' * max(offset + length, 0x406000))
-            data[0x400000:0x400000 + len(IDENTITY)] = IDENTITY
-            data[0x405000:0x405000 + len(CALIBRATION)] = CALIBRATION
-            self.ram[int(words[3], 16)] = bytes(data[offset:offset + length])
+            self.ram[int(words[3], 16)] = bytes(self.nand[offset:offset + length])
             return 'Reading', 0
         raise AssertionError(line)
+
+    def dumper_bmtdetach(self, line, words):
+        if self.translation == 'none' or self.detached:
+            return 'airoha-bmt: not attached; the chip is already addressed physically', 0
+        self.detached = True
+        return 'airoha-bmt: detached; spi-nand0 is addressed physically', 0
 
     def dumper_md_b(self, line, words):
         address, length = int(words[1], 16), int(words[2], 16)
@@ -338,65 +380,44 @@ class FakeUnit:
 
     def restorer_mtd(self, line, words):
         if words[1] == 'list':
-            return (f'* spi-nand0\n  - flags: 0x400 (writeable)\n'
-                    f'  - translation: {self.translation}\n'
+            return (f'{self.probe_line()}* spi-nand0\n  - flags: 0x400 (writeable)\n'
+                    f'  - translation: {self.translation}\n{self.geometry()}'
                     f'  - 0x000000000000-0x{len(self.nand):012x} : "spi-nand0"'), 0
         if words[1] == 'read.dontskipbad':
             offset, length = int(words[4], 16), int(words[5], 16)
             self.ram[int(words[3], 16)] = bytes(self.nand[offset:offset + length])
             return 'Reading', 0
-        if words[1] == 'erase':
-            offset, length = int(words[3], 16), int(words[4], 16)
-            self.nand[offset:offset + length] = b'\xff' * length
-            return f'Erasing 0x{offset:08x} ...', 0
-        if words[1] == 'write.dontskipbad':
-            address, offset, length = (int(word, 16) for word in words[3:6])
-            data = self.read_ram(address, length)
-            assert self.nand[offset:offset + length] == b'\xff' * length, 'write before erase'
-            self.nand[offset:offset + length] = data
-            self.nand_writes.append((offset, length))
-            if offset <= 0x200000 < offset + length:
-                env = data[0x200000 - offset:0x200000 - offset + 0x1000]
-                match = re.search(rb'bootcmd=([^\n\0]*)', env)
-                if match:
-                    self.saved['bootcmd'] = match.group(1).decode()
-            return f'Writing {length} byte(s) at offset 0x{offset:08x}', 0
         raise AssertionError(line)
 
     def restorer_nandsync(self, line, words, check=False):
         address, offset, length = (int(word, 16) for word in words[2:5])
         want = self.read_ram(address, length)
         assert len(want) == length, 'nandsync past the loaded RAM'
-        differ = 0
-        for at in range(0, length, 0x20000):
-            block = want[at:at + 0x20000]
-            if self.nand[offset + at:offset + at + 0x20000] == block:
+        differ, size = 0, self.part.block
+        assert not offset % size and not length % size, 'nandsync off the block grid'
+        for at in range(0, length, size):
+            block = want[at:at + size]
+            if self.nand[offset + at:offset + at + size] == block:
                 continue
             differ += 1
             if not check:
-                self.nand[offset + at:offset + at + 0x20000] = block
-                self.nand_writes.append((offset + at, 0x20000))
+                self.nand[offset + at:offset + at + size] = block
+                self.nand_writes.append((offset + at, size))
                 if offset + at == 0x200000:
                     match = re.search(rb'bootcmd=([^\n\0]*)', block)
                     if match:
                         self.saved['bootcmd'] = match.group(1).decode()
         word = 'differ' if check else 'rewritten and read back'
-        return f'nandsync: {length // 0x20000} blocks, {differ} {word}', 0
+        return f'nandsync: {length // size} blocks, {differ} {word}', 0
 
     def restorer_nandsync_check(self, line, words):
         return self.restorer_nandsync(line, words, check=True)
-
-    def restorer_tftpput(self, line, words):
-        return self.dumper_tftpput(line, words)
 
     def restorer_md_b(self, line, words):
         return self.dumper_md_b(line, words)
 
     def restorer_bmtstats(self, line, words):
         return 'bmtstats erase=0/0 program=0/0', 0
-
-    def loader_bmtstats(self, line, words):
-        return 'bmtstats erase=0/0 program=0/0 markbad=0/0 readback=0/0', 0
 
     def loader_ubi(self, line, words):
         action = words[1]
@@ -409,6 +430,7 @@ class FakeUnit:
         volumes = self.ubi[self.attached]
         if action == 'create':
             volumes[words[2]] = b''
+            self.created.setdefault(self.attached, []).append(tuple(words[2:]))
             return f'Creating volume {words[2]}', 0
         if action == 'write':
             volumes[words[3]] = self.read_ram(int(words[2], 16), int(words[4], 16))
@@ -420,6 +442,9 @@ class FakeUnit:
         raise AssertionError(line)
 
     def loader_mtd(self, line, words):
+        if words[1] == 'list':
+            return (f'* spi-nand0\n{self.geometry()}'
+                    f'  - 0x000000000000-0x{self.chip_bytes:012x} : "spi-nand0"'), 0
         assert words[1] == 'erase', line
         self.erased.append((words[2], int(words[3], 16), int(words[4], 16)))
         self.ubi[words[2]] = {}

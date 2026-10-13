@@ -83,3 +83,6 @@ transmits.
 - [ ] The same on a fresh machine (only the development machine has built it).
 - [x] Install and return to stock run on a second unit (a W1700K2).
 - [ ] Update and recovery (`init/flash`) run on a second unit.
+- [ ] A W25N04LV unit (some W1700K2s) read raw and installed: the part, its
+      spare layout and its vendor bad-block reserve are supported from three
+      community driver tables and the W1700K's stock U-Boot, none read on one.

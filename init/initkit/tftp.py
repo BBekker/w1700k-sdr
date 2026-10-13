@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 """A TFTP server for the installer: unprivileged, one directory, one peer at a time.
 
-It serves the images U-Boot fetches and receives the NAND backup U-Boot sends.
+It serves the images U-Boot fetches and receives the backups and raw dumps U-Boot
+sends.
 
 * An upload never overwrites a file: a write request for an existing name is
   refused with TFTP error 6.

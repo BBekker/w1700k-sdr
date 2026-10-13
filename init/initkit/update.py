@@ -24,7 +24,7 @@ def run(settings, serial=None, fit=False, rootfs=False, durable=False, loader=Fa
         recovery=False, boot=True, authorized_key=None):
     wanted = [config.SYSTEM_FIT] if fit else []
     wanted += [config.ROOTFS] if rootfs else []
-    wanted += [config.DURABLE] if durable else []
+    wanted += list(config.DURABLES) if durable else []
     wanted += [config.LOADER] if loader else []
     wanted += [config.RECOVERY_FIT] if recovery else []
     config.require_images(*wanted)
@@ -55,7 +55,7 @@ def run(settings, serial=None, fit=False, rootfs=False, durable=False, loader=Fa
                 steps.write_volume(session, 'rootfs', image, skip_current=True)
             steps.detach(session)
         if durable:
-            steps.format_durable(session)
+            steps.format_durable(session, steps.loader_nand(session))
         if not boot:
             print('flash: left at the loader prompt')
             return 0

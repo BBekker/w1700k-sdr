@@ -7,13 +7,15 @@
 Stock U-Boot receives this FIT over TFTP and boots it from RAM. It reads the
 NAND's data as stock firmware addresses it, through the vendor BBT/BMT
 translation and the chip's ECC, into RAM, hashes it and sends it to the host
-with `tftpput`. That image is the way back to the stock operating state, and it
+with `tftpput`. That backup is the way back to the stock operating state, and it
 is taken before anything is written, so the dumper cannot write: there is no
 UBI, no saved environment, no autoboot, the BMT write engine is not linked, and
 the NAND write, erase and mark-bad paths are not compiled in at all. The build
-checks the linked image for each of them. A chip whose vendor tables do not
-validate is shown untranslated, so it can still be read and examined; the
-installer backs up only a translated chip.
+checks the linked image for each of them. For a raw image (init/rawdump),
+`bmtdetach` drops the translation and `mtd read.raw.oob` reads every page
+physically, ECC off. A chip whose vendor tables do not validate is shown
+untranslated, so it can still be read and examined; the installer backs up only
+a translated chip.
 """
 import gzip
 from pathlib import Path
@@ -70,7 +72,8 @@ ABSENT_PREFIXES = ('ubi_', 'ubiblock_', 'do_ubi', 'airoha_bmt_transaction_',
 # entries).
 REQUIRED = ('mtd_read_oob', 'spinand_mtd_read', 'mtd_block_isbad', 'do_mtd_io',
             'spinand_erase_refused', 'spinand_markbad_refused', 'airoha_bmt_attach',
-            'airoha_bmt_attached', 'airoha_bmt_translate', 'airoha_bmt_parse_bmt')
+            'airoha_bmt_attached', 'airoha_bmt_translate', 'airoha_bmt_parse_bmt',
+            'airoha_bmt_vendor_pool', 'do_bmtdetach', 'w25n04lv_ooblayout_ecc')
 
 
 def patches():

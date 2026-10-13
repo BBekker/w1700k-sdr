@@ -17,8 +17,10 @@
  * Wiring is [static] from the board device tree unless tagged. Board
  * variants: FCC ID MXF-W1700K (HW labels 1.0, 1.1) and MXF-W1700K2 (HW 2.1).
  * The W1700K2 differs in its 10 GbE PHYs (below), its fan controller
- * (marked NCT7512S) and, on some units, its SPI-NAND part; nothing here is
- * measured on a W1700K2.
+ * (marked NCT7512S) and, on some units, its SPI-NAND part. One W1700K2 with
+ * the W25N04KV has been installed and streamed; its RTL8261CE PHYs and NAND
+ * are [measured] there, its fan controller is not, and no W25N04LV unit has
+ * been read.
  */
 #ifndef HW_AN7581_W1700K_BOARD_H
 #define HW_AN7581_W1700K_BOARD_H
@@ -33,10 +35,11 @@
  * SoC: Airoha AN7581GT.
  * DRAM: two ESMT M16U8G16512A DDR4, 8 Gbit x16 each = 2 GiB, inferred
  *   32-bit bus [measured size; markings read from a board photograph].
- * Flash: Winbond W25N04KV, 512 MiB SPI-NAND [measured geometry].
+ * Flash: Winbond W25N04KV, 512 MiB SPI-NAND [measured geometry]; a W25N04LV
+ *   on some W1700K2s (below).
  * Radio: MediaTek MT7996 on PCIe (two host interfaces, below).
  * 10GbE PHYs: two Realtek RTL8261N (10GBASE-T) on the W1700K, two RTL8261CE
- *   on the W1700K2 [inferred].
+ *   on the W1700K2 [measured on one unit].
  * Board monitor: Nuvoton fan/thermal controller on I2C0 at 0x2e (marked
  *   NCT7511Y; NCT7512S on the W1700K2; the device tree binds the NCT7802
  *   driver, whose device-tree probe checks no chip ID).
@@ -100,13 +103,12 @@
  * The PHYs need the "rtl8261n.bin" patch (1,437 records) at their first
  * probe [measured].
  * W1700K2: RTL8261CEs (PHY ID 0x001cc899, sub-model 0x00) at the same MDIO
- *   addresses, with the same reset GPIOs and the same inverted lanes [inferred:
- *   OpenWrt's one W1700K device tree runs on a 2.1, and the 2.1's stock boot
- *   log names "rtl8261ce" and swaps the SerDes P/N]. Their driver loads
- *   "rtl_nic/rtl8261c.bin" (Realtek, linux-firmware) when the PHY is first
- *   configured and applies the lane polarity from the device tree itself
- *   [static]. The kernel picks the driver by PHY ID, so one device tree and
- *   one kernel serve both variants.
+ *   addresses, with the same reset GPIOs and the same inverted lanes [measured
+ *   on one unit; the 2.1's stock boot log names "rtl8261ce" and swaps the
+ *   SerDes P/N]. Their driver loads "rtl_nic/rtl8261c.bin" (Realtek,
+ *   linux-firmware) when the PHY is first configured and applies the lane
+ *   polarity from the device tree itself [static]. The kernel picks the driver
+ *   by PHY ID, so one device tree and one kernel serve both variants.
  * HAZARD: if the first PHY probe fails (patch not yet available), the error
  *   path holds both PHYs in reset (GPIO 31/46 low) and they never bind again
  *   until reboot [measured]. Build the patch into the kernel image.
@@ -166,9 +168,8 @@
 /*
  * W25N04KV geometry [measured]: 2048-byte pages + 128-byte OOB, 64 pages per
  * 128 KiB eraseblock, 4096 blocks, 512 MiB.
- * Some W1700K2 units carry a W25N04LV instead (ID 0xef 0x8b 0x23: 4 KiB
- * pages, 256 KiB eraseblocks) [inferred]; nothing in this project supports
- * that geometry.
+ * Some W1700K2 units carry a W25N04LV instead (ID 0xef 0x8b 0x23) [static,
+ * never read on a unit]: see W1700K_NAND_LV_* below.
  * Bus: up to 50 MHz, commands 1-bit, reads 2-bit [static].
  * ECC: on-die, 8 bits per 512-byte step; the SoC's ECC and AutoFDM are off
  * [static]. ECC-protected free OOB ("AUTO"): 4 x 14 bytes at OOB offsets 2,
@@ -206,6 +207,24 @@
 #define W1700K_NAND_SPI_MAX_HZ          50000000u
 #define W1700K_NAND_RAW_IMAGE_BYTES     570425344u
 
+/*
+ * W25N04LV geometry [static: OpenWrt PR #25532 from a 2.1 owner, Rockchip's
+ * and Nuvoton's winbond tables; never read on a unit by this project]:
+ * 4096-byte pages + 256-byte OOB, 64 pages per 256 KiB eraseblock, 2048
+ * blocks, one plane, 512 MiB; 8-bit on-die ECC per 512-byte step with the
+ * W25N04KV's status bits. Spare layout taken as the W25N04KV's doubled: eight
+ * 16-byte groups, user bytes 2-15 of each free and ECC-protected (112 bytes),
+ * step k's 13 parity bytes at OOB 128 + 16k. A raw whole-chip image is the
+ * same 570,425,344 bytes.
+ */
+#define W1700K_NAND_LV_PAGE_BYTES       4096u
+#define W1700K_NAND_LV_OOB_BYTES        256u
+#define W1700K_NAND_LV_PAGES_PER_BLOCK  64u
+#define W1700K_NAND_LV_BLOCK_BYTES      0x40000u
+#define W1700K_NAND_LV_BLOCKS           2048u
+#define W1700K_NAND_LV_OOB_FREE(n)      (2u + 16u * (n)) /* n = 0..7, 14 bytes each */
+#define W1700K_NAND_LV_OOB_PARITY(n)    (128u + 16u * (n)) /* n = 0..7, 13 bytes */
+
 /* Vendor BBT/BMT values for this part (formulas in snfi.h): scan target 327
  * good blocks, ceiling 512, pool clamped to 250, so the reserve starts at
  * block 3846 (0x1e0c0000); the stock kernel publishes 3584 blocks
@@ -214,6 +233,16 @@
 #define W1700K_BMT_POOL_BLOCKS          250u
 #define W1700K_BMT_SYSTEM_BLOCKS        3846u
 #define W1700K_BMT_USER_BLOCKS          3584u
+
+/* The W25N04LV under the same vendor rules [inferred: the rule is read from
+ * stock U-Boots that do not know the part]: scan target 163, ceiling 256, no
+ * clamp in practice, so the pool is 163 plus the factory-bad blocks among the
+ * top 163 good ones and differs per unit; the BMT checksum covers that many
+ * entries. The stock kernel would publish 1792 blocks (0x1c000000). With at
+ * most 40 bad blocks, at least 1845 blocks translate, above the 1784 that
+ * reach the end of `scratch` (0x1be00000). */
+#define W1700K_BMT_LV_POOL_LEAST        163u
+#define W1700K_BMT_LV_USER_BLOCKS       1792u
 
 /* ======================================================================== */
 /* NAND partition maps (vendor-logical offsets)                             */

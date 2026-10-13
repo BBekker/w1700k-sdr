@@ -11,5 +11,6 @@ __pycache__/
 *.key
 nand.bin
 nand-raw.bin
+nand-raw.json
 eeprom.bin
 /captures/

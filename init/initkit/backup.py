@@ -88,26 +88,17 @@ def serial_in_backup(path):
         return parse_identity(stream.read(IDENTITY_BYTES)).get(SERIAL_KEY, '').strip()
 
 
-def read_serial(console, log):
-    """The serial from the identity window, through the dumper.
-
-    The chip must be translated first, so the offset is the one stock uses;
-    `.dontskipbad` keeps it exact. Only as much of the window is shown on the
-    console as it takes to reach the serial.
-    """
-    check_listing(console, log)
-    return read_serial_at(console)
-
-
-def read_serial_at(console, scratch=IDENTITY_SCRATCH):
-    """The serial from the identity window of a translated chip, read through
-    RAM at `scratch` (the dumper or the restorer)."""
-    console.must_run(f'mtd read.dontskipbad spi-nand0 {scratch:#x} '
+def read_serial(console):
+    """The serial from the identity window, through RAM at IDENTITY_SCRATCH (at
+    the dumper or the restorer). On a translated chip the offset is the one
+    stock uses; `.dontskipbad` keeps it exact. Only as much of the window is
+    shown on the console as it takes to reach the serial."""
+    console.must_run(f'mtd read.dontskipbad spi-nand0 {IDENTITY_SCRATCH:#x} '
                      f'{IDENTITY_OFFSET:#x} {IDENTITY_BYTES:#x}', limit=120)
-    raw = parse_md(console.must_run(f'md.b {scratch:#x} {FIRST_LOOK:#x}', limit=60))
+    raw = parse_md(console.must_run(f'md.b {IDENTITY_SCRATCH:#x} {FIRST_LOOK:#x}', limit=60))
     if SERIAL_KEY not in parse_identity(raw):
         raw += parse_md(console.must_run(
-            f'md.b {scratch + FIRST_LOOK:#x} {IDENTITY_BYTES - FIRST_LOOK:#x}',
+            f'md.b {IDENTITY_SCRATCH + FIRST_LOOK:#x} {IDENTITY_BYTES - FIRST_LOOK:#x}',
             limit=120))
     return serial_from(parse_identity(raw))
 
@@ -131,11 +122,45 @@ def check_translated(listing):
                          'nothing was written:\n' + listing[-600:])
 
 
-def check_listing(console, log):
+def list_chip(console, log, name='mtd-list.txt'):
+    """`mtd list` at the dumper, which must report the chip read-only. The
+    first listing after the dumper starts also names the part (initkit.nand)."""
     listing = console.must_run('mtd list', limit=30)
-    log.text('mtd-list.txt', listing)
+    log.text(name, listing)
     check_read_only(listing)
-    check_translated(listing)
+    return listing
+
+
+def set_network(console, settings):
+    """The dumper's TFTP client: this host's transfer port, 1468-byte blocks."""
+    console.must_run('; '.join((f'setenv ipaddr {settings.device_ip}',
+                                f'setenv serverip {settings.host_ip}',
+                                f'setenv tftpdstp {settings.transfer_port}',
+                                'setenv tftpblocksize 1468')), limit=20)
+
+
+def send(console, served_dir, address, size, name, what, seconds):
+    """Hash `size` bytes at `address` on the device, `tftpput` them as `name`
+    and check the file that lands in `served_dir`; returns (path, SHA-256)."""
+    text = console.must_run(f'hash sha256 {address:#x} {size:#x}', limit=900, heartbeat=15,
+                            about=10)
+    device = SHA256_LINE.search(text)
+    if not device:
+        raise StepFailed(f'the device printed no SHA-256 for {what}')
+    print(f'  sending it to the host (about {seconds} s)')
+    partial = Path(served_dir) / name
+    partial.unlink(missing_ok=True)
+    text = console.must_run(f'tftpput {address:#x} {size:#x} {name}', limit=1800,
+                            heartbeat=15, about=seconds)
+    if not TRANSFERRED.search(text) or not partial.is_file():
+        raise StepFailed('tftpput did not complete:\n' + text[-600:])
+    if partial.stat().st_size != size:
+        raise StepFailed(f'{what} is {partial.stat().st_size} bytes, not {size}')
+    received = sha256_file(partial)
+    if received != device.group(1).lower():
+        raise StepFailed(f'{what} was corrupted in transfer: device {device.group(1)}, '
+                         f'host {received}; it was kept as {partial}')
+    return partial, received
 
 
 def dump(console, log, settings, served_dir, unit_directory, serial):
@@ -147,11 +172,8 @@ def dump(console, log, settings, served_dir, unit_directory, serial):
     target = Path(unit_directory) / BACKUP_NAME
     if target.exists():
         raise StepFailed(f'{target} exists; a backup is never overwritten')
-    console.must_run('; '.join((f'setenv ipaddr {settings.device_ip}',
-                                f'setenv serverip {settings.host_ip}',
-                                f'setenv tftpdstp {settings.transfer_port}',
-                                'setenv tftpblocksize 1468')), limit=20)
-    check_listing(console, log)
+    set_network(console, settings)
+    check_translated(list_chip(console, log, 'mtd-list-dump.txt'))
     print('  reading the NAND data (about a minute, silent)')
     text = console.must_run(f'mtd read.dontskipbad spi-nand0 {DUMP_BUFFER:#x} 0 '
                             f'{DUMP_BYTES:#x}', limit=900, heartbeat=15, about=55)
@@ -160,24 +182,8 @@ def dump(console, log, settings, served_dir, unit_directory, serial):
                          'no backup was made:\n' + text[-600:])
     corrected = text.count('Corrected bitflips')
     log.event('read', corrected_pages=corrected)
-    text = console.must_run(f'hash sha256 {DUMP_BUFFER:#x} {DUMP_BYTES:#x}',
-                            limit=900, heartbeat=15, about=10)
-    device = SHA256_LINE.search(text)
-    if not device:
-        raise StepFailed('the device printed no SHA-256 for the dump buffer')
-    print('  sending it to the host (about 35 s)')
-    partial = Path(served_dir) / BACKUP_NAME
-    partial.unlink(missing_ok=True)
-    text = console.must_run(f'tftpput {DUMP_BUFFER:#x} {DUMP_BYTES:#x} {BACKUP_NAME}',
-                            limit=1800, heartbeat=15, about=34)
-    if not TRANSFERRED.search(text) or not partial.is_file():
-        raise StepFailed('tftpput did not complete:\n' + text[-600:])
-    if partial.stat().st_size != DUMP_BYTES:
-        raise StepFailed(f'the backup is {partial.stat().st_size} bytes, not {DUMP_BYTES}')
-    received = sha256_file(partial)
-    if received != device.group(1).lower():
-        raise StepFailed(f'the backup was corrupted in transfer: device {device.group(1)}, '
-                         f'host {received}; it was kept as {partial}')
+    partial, received = send(console, served_dir, DUMP_BUFFER, DUMP_BYTES, BACKUP_NAME,
+                             'the backup', 35)
     if serial_in_backup(partial) != serial:
         raise StepFailed(f'the backup does not hold serial {serial}; it was kept as {partial}')
     partial.chmod(0o400)

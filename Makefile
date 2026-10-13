@@ -37,7 +37,7 @@ rootfs: sdr
 loader: toolchain
 	$(PYTHON) platform/loader/build.py
 
-# The system and recovery FITs, the root and the durable image.
+# The system and recovery FITs, the root and the durable images (one per NAND part).
 images: rootfs loader
 	$(PYTHON) platform/images.py
 

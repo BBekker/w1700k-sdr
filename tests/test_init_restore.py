@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: MIT
 """init/restore, run end to end against the simulated unit."""
-import contextlib
 from pathlib import Path
 import sys
 import unittest
@@ -10,8 +9,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_init_install import Bench  # noqa: E402
 import init_fake_unit as fake  # noqa: E402
 from initkit import backup, config, restore  # noqa: E402
+from initkit.config import partitions  # noqa: E402
 from initkit.console import StepFailed  # noqa: E402
 
+KV, LV = partitions.NANDS
 SIZE = 0x800000
 UENV = b'bootcmd=' + fake.STOCK_BOOTCMD.encode() + b'\nbootdelay=3\n'
 OURS = b'bootcmd=flash read 0x600000 0x40000 0x89000000; bootm 0x89000000\n'
@@ -38,10 +39,10 @@ class Restore(Bench):
         self.backup = self.work / 'nand.bin'
         self.backup.write_bytes(stock_backup())
 
-    def installed_unit(self):
+    def installed_unit(self, part=KV):
         """A unit running our system: stock's data except our bootcmd in `uenv`
         and our images over 1 MiB at 0x600000."""
-        unit = self.make_unit(chip_bytes=SIZE, installed=True)
+        unit = self.make_unit(chip_bytes=SIZE, installed=True, part=part)
         unit.nand[:] = self.backup.read_bytes()
         unit.nand[0x200000:0x200000 + len(OURS)] = OURS
         unit.nand[0x600000:0x700000] = b'\x5a' * 0x100000
@@ -106,13 +107,36 @@ class Restore(Bench):
         unit = self.installed_unit()
         self.restore()
         self.assertEqual(unit.nand_writes,
-                         [(0x600000 + block * 0x20000, 0x20000) for block in range(8)] +
-                         [(0x200000, 0x20000)])
+                         [(0x600000 + block * KV.block, KV.block) for block in range(8)] +
+                         [(0x200000, KV.block)])
         sent = [line.split()[2] for line in self.commands('restorer')
                 if line.startswith('tftpboot')]
         self.assertEqual(sent, ['backup.gz'])
         self.assertFalse(any(line.startswith(('mtd erase', 'mtd write', 'tftpput'))
                              for line in self.commands('restorer')))
+
+    def test_an_untested_nand_is_not_written_without_the_flag(self):
+        unit = self.installed_unit(part=LV)
+        with self.assertRaisesRegex(StepFailed, 'UNTESTED NAND IC DETECTED!'):
+            self.restore()
+        self.assertEqual(unit.nand_writes, [])
+        self.assertFalse(any(line.startswith(('tftpboot', 'nandsync'))
+                             for line in self.commands('restorer')))
+
+    def test_a_pool_stock_does_not_share_writes_nothing(self):
+        unit = self.installed_unit(part=LV)
+        unit.stock_pool = 170
+        with self.assertRaisesRegex(StepFailed, 'pool of 170 blocks and ours computes 163'):
+            self.restore(accept_untested=True)
+        self.assertEqual(unit.nand_writes, [])
+
+    def test_a_w25n04lv_is_compared_and_rewritten_in_its_256_kib_blocks(self):
+        unit = self.installed_unit(part=LV)
+        self.assertEqual(self.restore(accept_untested=True), 0)
+        self.assertEqual(bytes(unit.nand), self.backup.read_bytes())
+        self.assertEqual(unit.nand_writes,
+                         [(0x600000 + block * LV.block, LV.block) for block in range(4)] +
+                         [(0x200000, LV.block)])
 
     def test_a_unit_that_already_holds_the_backup_is_not_written(self):
         unit = self.installed_unit()

@@ -60,8 +60,9 @@ DISABLED = ('MTD_SPI_NAND_READ_ONLY', 'MTD_UBI', 'CMD_UBI', 'AUTOBOOT', 'CMD_SAV
             'BOOTCOUNT_LIMIT', 'USE_PREBOOT', 'ENV_IS_IN_MTD', 'ENV_IS_IN_UBI')
 REQUIRED = ('airoha_bmt_attach', 'airoha_bmt_attached', 'airoha_bmt_translate',
             'airoha_bmt_transaction_recover', 'airoha_bmt_publish', 'do_mtd_io',
-            'do_mtd_erase', 'do_unzip', 'do_nandsync')
-ABSENT = ('env_save', 'do_mtd_markbad')
+            'do_mtd_erase', 'do_unzip', 'do_nandsync', 'airoha_bmt_vendor_pool',
+            'w25n04lv_ooblayout_ecc')
+ABSENT = ('env_save', 'do_mtd_markbad', 'do_bmtdetach')
 ABSENT_PREFIXES = ('ubi_', 'ubiblock_', 'do_ubi')
 # The loader's translation and transaction patches, and the dumper's reports
 # (`mtd list` access flags and translation, probe failures) and corrected-page

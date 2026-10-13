@@ -19,7 +19,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from initkit import config, restore, session          # noqa: E402
+from initkit import config, nand, restore, session    # noqa: E402
 from initkit.console import StepFailed                # noqa: E402
 
 
@@ -38,11 +38,14 @@ def main():
                              'calibration differ from the backup (those are never written)')
     parser.add_argument('--no-boot', action='store_true',
                         help='stay at the restorer prompt afterwards')
+    parser.add_argument(nand.UNTESTED_FLAG, dest='accept_untested', action='store_true',
+                        help='write a NAND part this project has never run on a unit '
+                             '(the W25N04LV), at the risk of corrupting it')
     args = parser.parse_args()
     settings = session.settings_from(args)
     try:
         return restore.run(settings, args.backup, args.unit, boot=not args.no_boot,
-                           force=args.force)
+                           force=args.force, accept_untested=args.accept_untested)
     except (StepFailed, RuntimeError) as error:
         sys.exit(f'restore: {error}')
     except KeyboardInterrupt:
