@@ -217,6 +217,29 @@ static void writes(void)
 	op=(struct mtd_oob_ops){.mode=MTD_OPS_AUTO_OOB,.len=PS,.datbuf=data};
 	assert(!m._write_oob(&m,448ull*BS,&op) && op.retlen==PS);
 	assert(mutations==before_mutations+1 && physical_reads==before_reads+1);
+	/* A block erased in an earlier boot (a UBI free PEB: an EC header in page
+	 * 0, the rest erased) is learned once, then appended to directly: one
+	 * program and one readback per page, no erase, no journal, no remap. */
+	base(0);
+	{
+		struct block *s=storage(physical(68));
+		memset(s->main[0],0x11,PS); s->programs[0]=1; s->last=0;
+	}
+	before_mutations=mutations;
+	u64 before_erases=layer.counters.erase_attempts;
+	before_readbacks=layer.counters.readback_attempts;
+	memset(data,0x6e,PS);
+	for(unsigned page=1;page<=3;page++) {
+		op=(struct mtd_oob_ops){.mode=MTD_OPS_AUTO_OOB,.len=PS,.datbuf=data};
+		assert(!m._write_oob(&m,68ull*BS+page*PS,&op) && op.retlen==PS);
+	}
+	assert(mutations==before_mutations+3 && layer.counters.erase_attempts==before_erases);
+	assert(layer.counters.readback_attempts==before_readbacks+T_PAGES+3);
+	assert(!layer.writer->remaps && storage(physical(68))->programs[0]==1);
+	for(unsigned page=1;page<=3;page++) assert(storage(physical(68))->main[page][7]==0x6e);
+	/* A page below the highest in use is not appended to: it is remapped. */
+	op=(struct mtd_oob_ops){.mode=MTD_OPS_AUTO_OOB,.len=PS,.datbuf=data};
+	assert(!m._write_oob(&m,68ull*BS,&op) && op.retlen==PS && layer.writer->remaps==1);
 	/* A failed direct program falls back to the durable remap path. */
 	base(0);fast_erase=(struct erase_info){.addr=64ull*BS,.len=BS};
 	assert(!m._erase(&m,&fast_erase));fail_original=1;
@@ -291,9 +314,13 @@ static void refusals(void)
 }
 static void recovery(void)
 {
+	/* The direct program tears its page; the transaction then stages the
+	 * intended block and remaps, and here its metadata write fails too. The
+	 * caller is told nothing was made durable; recovery publishes it. */
 	base(0);memset(data,0x57,sizeof data);fail_original=fail_metadata=1;
 	struct mtd_oob_ops op={.mode=MTD_OPS_AUTO_OOB,.len=PS,.datbuf=data};
-	assert(m._write_oob(&m,64ull*BS,&op)==-EIO && op.retlen==(T_PS/2) && layer.writer->failed);
+	assert(m._write_oob(&m,64ull*BS,&op)==-EIO && !op.retlen && layer.writer->failed);
+	assert(layer.writer->has_pending);
 	unsigned prior=mutations;
 	assert(m._write_oob(&m,64ull*BS,&op)==-EIO && !op.retlen && mutations==prior);
 	assert(m._read_oob(&m,64ull*BS,&op)==-EIO && !op.retlen);

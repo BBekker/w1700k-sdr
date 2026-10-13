@@ -265,9 +265,32 @@ static u32 fast_overlap(u32 a,u32 n,u32 b,u32 m)
 	return end>first ? end-first : 0;
 }
 
-/* A controller-acknowledged erase in this boot makes one block eligible for
- * direct, ascending first-page programs. Verify each written page exactly once.
- * Any uncertainty falls back to the durable transaction/remap engine. */
+/* A block first written in this boot without an erase in it (UBI keeps its
+ * free PEBs erased across boots; UBIFS appends to them page by page): read
+ * its pages from the last down to the highest one in use, once per boot, and
+ * treat everything up to that page as programmed. Appends above it are then
+ * direct, not a journalled whole-block replacement per page. */
+static int fast_learn(struct mtd_info *mtd,u32 logical,int index,int mapped)
+{
+	int rc;
+	u32 p;
+	fast_programmed_pages[index]=0; fast_highest_page[index]=-1;
+	for(p=AIROHA_BMT_BLOCK_PAGES;p-- > 0;) {
+		rc=flash_erased(mtd,mapped,p);
+		if(rc<0) return BMT_FAST_FALLBACK;	/* the engine reports it */
+		if(rc) continue;
+		fast_highest_page[index]=p;
+		fast_programmed_pages[index]=p==AIROHA_BMT_BLOCK_PAGES-1 ? ~0ULL : (1ULL<<(p+1))-1;
+		break;
+	}
+	fast_set_bit(fast_known,logical,1);
+	return 0;
+}
+
+/* Direct, ascending programs into erased pages above every page in use: the
+ * block's state is known from an erase in this boot or from fast_learn.
+ * Verify each written page exactly once. A failed program, and any other
+ * uncertainty, falls back to the durable transaction/remap engine. */
 static int fast_program(struct mtd_info *mtd,const struct airoha_bmt_change *c,
 		struct airoha_bmt_progress *done)
 {
@@ -276,9 +299,13 @@ static int fast_program(struct mtd_info *mtd,const struct airoha_bmt_change *c,
 	u32 p,written,oobwritten;
 	int index,mapped,shift,rc;
 	index=fast_index(c->logical);
-	if(index<0 || !fast_bit(fast_known,c->logical)) return BMT_FAST_FALLBACK;
+	if(index<0) return BMT_FAST_FALLBACK;
 	mapped=map_block(c->logical); shift=airoha_bmt_shift(&layer.t,c->logical);
 	if(mapped<0 || shift<0) return -EIO;
+	if(!fast_bit(fast_known,c->logical)) {
+		rc=fast_learn(mtd,c->logical,index,mapped);
+		if(rc) return rc;
+	}
 	for(p=0;p<AIROHA_BMT_BLOCK_PAGES;p++) {
 		u32 data=fast_overlap(c->offset,c->length,p*bmt_page,bmt_page);
 		u32 oob=fast_overlap(c->oob_offset,c->oob_length,p*bmt_oob,bmt_oob);

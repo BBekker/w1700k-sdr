@@ -94,14 +94,22 @@ never rewritten.
 | `scratch` | 0x5800000 | 358 MiB | unused | read-only |
 | `reserved-bmt` | 0x1be00000 | 66 MiB | vendor bad-block reserve pool | read-only |
 
-The BMT layer replaces blocks that wear out (journalled in the block after the
-BBT, so an interrupted replacement recovers on the next boot) and only ever
-writes inside `system`..`scratch`. It writes only while the BBT is the reserve's
-first good block, as the vendor places it: otherwise the pool it computed is
-not the one stock computes. A set factory marker is read twice in the pool scan
-(the byte has no ECC). Before anything is written, the installer and the
-restorer check that the pool stock U-Boot printed at its boot in the same run
-(`bmt pool size: N`) is the one our U-Boot computed.
+Writes program erased pages directly, in ascending order, and read each page
+back: a block's state is known from an erase in the same boot or, the first
+time it is written in a boot, from reading its pages down to the highest one in
+use (UBI keeps its free blocks erased across boots). One program per page, one
+erase per block reused. The BMT layer replaces a block only when a program or
+erase fails (journalled in the block after the BBT, so an interrupted
+replacement recovers on the next boot), and only ever writes inside
+`system`..`scratch` (the restorer: `uenv`..`scratch`, except `calibration`). It
+writes only while the BBT is the reserve's first good block, as the vendor
+places it: otherwise the pool it computed is not the one stock computes. A set
+factory marker is read twice in the pool scan (the byte has no ECC). Before
+anything is written, the installer and the restorer check that the pool stock
+U-Boot printed at its boot in the same run (`bmt pool size: N`) is the one our
+U-Boot computed. Linux waits for the chip by polling its status with `udelay()`
+(patch 0012): the kernel has no high-resolution timers, so a sleeping poll
+would take a 4 ms tick per page.
 
 ## Checks in the build
 
