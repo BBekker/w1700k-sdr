@@ -49,7 +49,7 @@ static inline void io_write32(void *ctx, u32 bar, u32 value)
 }
 
 static const struct sdr_mmio_ops io_ops = {
-	io_begin, io_end, io_read32, io_write32,
+	io_begin, io_end, io_read32, io_write32, NULL,
 };
 
 static inline struct sdr_mmio mock_io(u64 bar_size)

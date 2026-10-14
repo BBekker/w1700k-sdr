@@ -152,6 +152,47 @@ int sdr_mmio_read(const struct sdr_mmio *io, u32 address, void *dst, u32 length)
 	return 0;
 }
 
+/* Contiguous, caller-locked access: select once per aperture, not per word. */
+int sdr_mmio_block_held(const struct sdr_mmio *io, u32 address, void *data, u32 length, bool read)
+{
+	struct sdr_mapping map;
+	u32 done, count, off, value;
+	u8 *bytes = data;
+	if (!data || !length || (address | length) & 3 || length > SDR_MMIO_MAX_READ ||
+	    (u64)address + length > (1ULL << 32))
+		return -EINVAL;
+	for (done = 0; done < length; done += count) {
+		sdr_map(address + done, &map);
+		count = map.span < length - done ? map.span : length - done;
+		if (!sdr_map_fits(io, &map, count))
+			return -ERANGE;
+	}
+	for (done = 0; done < length; done += count) {
+		sdr_map(address + done, &map);
+		count = map.span < length - done ? map.span : length - done;
+		sdr_select(io, &map);
+		if (!read && io->ops->write_block) {
+			io->ops->write_block(io->ctx, map.bar, bytes + done, count);
+			continue;
+		}
+		for (off = 0; off < count; off += 4) {
+			u8 *p = bytes + done + off;
+			if (read) {
+				value = io->ops->read32(io->ctx, map.bar + off);
+				p[0] = value;
+				p[1] = value >> 8;
+				p[2] = value >> 16;
+				p[3] = value >> 24;
+			} else {
+				value = (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) |
+					((u32)p[3] << 24);
+				io->ops->write32(io->ctx, map.bar + off, value);
+			}
+		}
+	}
+	return 0;
+}
+
 static int sdr_map_word(const struct sdr_mmio *io, u32 address,
 			struct sdr_mapping *map)
 {

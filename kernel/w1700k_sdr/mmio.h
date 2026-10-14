@@ -35,6 +35,8 @@ struct sdr_mmio_ops {
 	void (*end)(void *ctx);
 	u32 (*read32)(void *ctx, u32 bar);
 	void (*write32)(void *ctx, u32 bar, u32 value);
+	/* Optional bulk store into SRAM, with one barrier after the copy. */
+	void (*write_block)(void *ctx, u32 bar, const void *data, u32 length);
 };
 
 struct sdr_mmio {
@@ -53,6 +55,8 @@ bool sdr_mem_read_allowed(u32 address, u32 length);
  * reprogramming the window at each window boundary. The whole request is
  * validated before any access. Bytes keep the device's little-endian order.
  */
+int sdr_mmio_block_held(const struct sdr_mmio *io, u32 address, void *data, u32 length, bool read);
+
 int sdr_mmio_read(const struct sdr_mmio *io, u32 address, void *dst, u32 length);
 
 /* One masked store, (before & ~mask) | value, read back, for a caller inside

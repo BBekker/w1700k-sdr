@@ -77,6 +77,12 @@ struct sdr_device {
 	bool ctl_pumping;
 };
 
+struct sdr_ctl_request {
+	struct w1700k_sdr_ctl ctl;
+	struct w1700k_sdr_block block;
+	u8 data[SDR_MMIO_MAX_READ];
+};
+
 static DEFINE_IDA(sdr_ids);
 
 static void sdr_free(struct kref *ref)
@@ -149,9 +155,20 @@ static void sdr_write32(void *ctx, u32 bar, u32 value)
 	writel(value, sdr->regs + bar);
 }
 
+/* Only called for contiguous scratch SRAM, never for control registers. */
+static void sdr_write_block(void *ctx, u32 bar, const void *data, u32 length)
+{
+	struct sdr_device *sdr = ctx;
+
+	lockdep_assert_held(&sdr->io_lock);
+	memcpy_toio(sdr->regs + bar, data, length);
+	wmb();
+}
+
 static const struct sdr_mmio_ops sdr_ops = {
 	.begin = sdr_begin, .end = sdr_end,
 	.read32 = sdr_read32, .write32 = sdr_write32,
+	.write_block = sdr_write_block,
 };
 
 /* The ownership poll's 10-20 ms tick. */
@@ -567,10 +584,21 @@ static int sdr_ctl_apply_held(struct sdr_device *sdr, struct w1700k_sdr_ctl *c)
 	int ret = 0;
 
 	lockdep_assert_held(&sdr->io_lock);
+	{
+		struct sdr_ctl_request *r = container_of(c, struct sdr_ctl_request, ctl);
+		if (r->block.length)
+			ret = sdr_mmio_block_held(&sdr->io, r->block.address, r->data,
+						  r->block.length,
+						  r->block.flags == W1700K_SDR_BLOCK_READ);
+	}
 	for (i = 0; !ret && i < c->count; i++)
 		ret = sdr_mmio_write32_held(&sdr->io, c->address[i], c->value[i]);
-	for (i = 0; !ret && i < c->read_count; i++)
-		ret = sdr_mmio_read32_held(&sdr->io, c->read_address + 4 * i, &c->read[i]);
+	if (!ret && c->read_count) {
+		ret = sdr_mmio_block_held(&sdr->io, c->read_address, c->read, 4 * c->read_count,
+					  true);
+		for (i = 0; !ret && i < c->read_count; i++)
+			c->read[i] = le32_to_cpu((__force __le32)c->read[i]);
+	}
 	return ret;
 }
 
@@ -648,17 +676,44 @@ static int sdr_ctl_via_pump(struct sdr_device *sdr, struct w1700k_sdr_ctl *c,
 	return c->result;
 }
 
-static long sdr_do_ctl(struct sdr_device *sdr, void __user *user)
+static long sdr_do_ctl(struct sdr_device *sdr, void __user *user, bool block)
 {
 	struct w1700k_sdr_ctl *c;
+	struct sdr_ctl_request *request;
 	unsigned long deadline;
 	long out;
 	int ret;
 
-	c = kzalloc(sizeof(*c), GFP_KERNEL);
-	if (!c)
+	request = kzalloc(sizeof(*request), GFP_KERNEL);
+	if (!request)
 		return -ENOMEM;
-	ret = copy_from_user(c, user, sizeof(*c)) ? -EFAULT : sdr_ctl_check(c);
+	c = &request->ctl;
+	if (block) {
+		struct w1700k_sdr_block *b = &request->block;
+		ret = copy_from_user(b, user, sizeof(*b)) ? -EFAULT : 0;
+		if (!ret &&
+		    (!b->data || !b->length || b->length > SDR_MMIO_MAX_READ ||
+		     ((b->address | b->length) & 3) || b->address < 0x0090b000 ||
+		     (u64)b->address + b->length > 0x0090f000 || b->flags > W1700K_SDR_BLOCK_READ ||
+		     !b->timeout_ms || b->timeout_ms > SDR_CTL_TIMEOUT_MAX))
+			ret = -EINVAL;
+		if (!ret && !b->flags &&
+		    copy_from_user(request->data, u64_to_user_ptr(b->data), b->length))
+			ret = -EFAULT;
+		c->timeout_ms = b->timeout_ms;
+		if (!ret && (b->reserved || b->write_count > 4 || (b->flags && b->write_count)))
+			ret = -EINVAL;
+		if (!ret && b->write_count) {
+			c->count = b->write_count;
+			for (u32 i = 0; i < c->count; i++) {
+				c->address[i] = b->write_address[i];
+				c->value[i] = b->write_value[i];
+			}
+			ret = sdr_ctl_check(c);
+		}
+	} else {
+		ret = copy_from_user(c, user, sizeof(*c)) ? -EFAULT : sdr_ctl_check(c);
+	}
 	if (ret)
 		goto done;
 	c->via_pump = 0;
@@ -669,7 +724,7 @@ static long sdr_do_ctl(struct sdr_device *sdr, void __user *user)
 	for (;;) {
 		spin_lock(&sdr->ctl_lock);
 		if (sdr->ctl_pumping) {
-			ret = sdr_ctl_via_pump(sdr, c, deadline);	/* unlocks */
+			ret = sdr_ctl_via_pump(sdr, c, deadline); /* unlocks */
 			break;
 		}
 		spin_unlock(&sdr->ctl_lock);
@@ -692,8 +747,15 @@ static long sdr_do_ctl(struct sdr_device *sdr, void __user *user)
 	mutex_unlock(&sdr->ctl_serial);
 done:
 	c->result = ret;
-	out = copy_to_user(user, c, sizeof(*c)) ? -EFAULT : ret;
-	kfree(c);
+	out = ret;
+	if (block) {
+		if (!ret && request->block.flags == W1700K_SDR_BLOCK_READ &&
+		    copy_to_user(u64_to_user_ptr(request->block.data), request->data,
+				 request->block.length))
+			out = -EFAULT;
+	} else if (copy_to_user(user, c, sizeof(*c)))
+		out = -EFAULT;
+	kfree(request);
 	return out;
 }
 
@@ -847,6 +909,7 @@ static bool sdr_privileged_ioctl(unsigned int cmd)
 	case W1700K_SDR_ACQUIRE_HOST:
 	case W1700K_SDR_DOWNLOAD:
 	case W1700K_SDR_RESET_MT:
+	case W1700K_SDR_BLOCK:
 	case W1700K_SDR_READ_MEM:
 	case W1700K_SDR_STREAM_RX:
 	case W1700K_SDR_CTL:
@@ -878,7 +941,9 @@ static long sdr_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case W1700K_SDR_STREAM_RX:
 		return sdr_do_stream_rx(sdr, user);
 	case W1700K_SDR_CTL:
-		return sdr_do_ctl(sdr, user);
+		return sdr_do_ctl(sdr, user, false);
+	case W1700K_SDR_BLOCK:
+		return sdr_do_ctl(sdr, user, true);
 	}
 	return -ENOTTY;
 }

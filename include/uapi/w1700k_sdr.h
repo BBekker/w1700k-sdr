@@ -249,4 +249,16 @@ struct w1700k_sdr_ctl {
 	__u32 reserved[2];
 };
 #define W1700K_SDR_CTL _IOWR('Q', 0x20, struct w1700k_sdr_ctl)
+/* Contiguous mailbox transfer, also serviced by a running stream pump.
+ * Limited to experimental scratch 0x0090b000..0x0090efff, at most 4096 bytes.
+ * It never grants host access to DSP TCM or other powered radio registers. */
+#define W1700K_SDR_BLOCK_READ 1U
+struct w1700k_sdr_block {
+    __u32 address, length;
+    __aligned_u64 data;
+    __u32 flags, timeout_ms;
+    /* Optional ordered CTL words published after a successful block write. */
+    __u32 write_count, write_address[4], write_value[4], reserved;
+};
+#define W1700K_SDR_BLOCK _IOWR('Q', 0x21, struct w1700k_sdr_block)
 #endif

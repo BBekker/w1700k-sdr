@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include <stdint.h>
+#include "../../host/ble/decode.h"
 
 /* DTCM offsets: mailbox [0,0x1000), general FFT [0x1000,0x9000),
  * twiddles [0x9000,0xd000), raw IQ [0xd000,0xf000), stack [0xf000,0x10000).
@@ -42,7 +43,18 @@ void dsp_main(void)
         BOX->cause = BOX->epc = BOX->tval = BOX->cycles = 0;
         BOX->state = 2;
         uint32_t start = CSR_READ(cycle);
-        if (BOX->op == 5) {
+        if (BOX->op == 8 && BOX->n <= 2048 &&
+            (BOX->address & 255) >= 37 && (BOX->address & 255) <= 39) {
+            struct ble_decoder *decoder = (struct ble_decoder *)0x201000;
+            if (BOX->address & 256) ble_reset(decoder, BOX->address & 255);
+            if (BOX->address & 512)
+                ble_decode8(decoder, (const int8_t *)0x204000, BOX->n,
+                            (struct ble_output *)0x208000);
+            else
+                ble_decode(decoder, (const int16_t *)0x204000, BOX->n,
+                           (struct ble_output *)0x208000);
+            BOX->result = 0;
+        } else if (BOX->op == 5) {
             BOX->result = dsp_mac_check();
         } else if (BOX->op == 6 && BOX->n == 2048) {
             dsp_fixed_spectrum((const volatile uint32_t *)0x20d000, (int32_t *)0x201000,

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  /><title>BLE Airwaves</title
+  ><link rel="stylesheet" href="/style.css" />
+  <body>
+    <header>
+      <div class="brand"><span class="mark">≋</span> BLE Airwaves</div>
+      <div id="connection">Connecting…</div>
+    </header>
+    <main>
+      <div class="intro">
+        <div>
+          <div class="eyebrow">W1700K · PASSIVE RECEIVER</div>
+          <h1>What’s advertising nearby.</h1>
+          <p>
+            Three channels, listening together. Verified Bluetooth LE
+            advertisements from the radio DSPs.
+          </p>
+        </div>
+        <a class="button" href="/api/export">Export recent packets ↗</a>
+      </div>
+      <section class="channels" id="channels"></section>
+      <section class="summary">
+        <div><strong id="total">0</strong><span>verified packets</span></div>
+        <div><strong id="devices">0</strong><span>recent addresses</span></div>
+        <div><strong id="rate">0</strong><span>packets / second</span></div>
+        <div><strong>LE 1M</strong><span>primary advertising PHY</span></div>
+      </section>
+      <div id="notice" class="notice" hidden></div>
+      <section class="feed">
+        <div class="feed-head">
+          <div>
+            <h2>Advertisement feed</h2>
+            <p id="history">Waiting for the receiver…</p>
+          </div>
+          <div class="tools">
+            <input
+              id="search"
+              aria-label="Filter advertisements"
+              placeholder="Filter by name, address or data"
+            /><button id="pause">Pause display</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Received</th>
+                <th>Channel</th>
+                <th>Advertiser</th>
+                <th>Name / data</th>
+                <th>Packet</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="empty">
+          Listening for CRC-valid advertisements. Packets will appear here as
+          they arrive.
+        </div>
+      </section>
+      <footer>
+        Receive only · No scan requests transmitted · Recent history holds 2,000
+        packets · Extended secondary-channel payloads are not followed.
+      </footer>
+    </main>
+    <dialog id="detail">
+      <button id="close" class="close">Close ×</button>
+      <h2 id="detail-title">Advertisement</h2>
+      <div id="detail-fields"></div>
+    </dialog>
+    <script src="/app.js"></script>
+  </body>
+</html>

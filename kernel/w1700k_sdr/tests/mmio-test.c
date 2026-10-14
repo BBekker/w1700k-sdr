@@ -206,8 +206,34 @@ static void word_accesses(void)
 	CHECK(!event_count && !io_begins);
 }
 
+/* The scratch transfer selects once, retains little-endian byte order, and
+ * checks every aperture before making any bus access. */
+static void scratch_blocks(void)
+{
+    struct sdr_mmio io = mock_io(0x200000);
+    struct sdr_mapping map;
+    u8 input[64], output[64];
+    for (unsigned i = 0; i < sizeof(input); i++) input[i] = i * 17;
+    io_reset();
+    sdr_map(0x0090b000, &map);
+    CHECK(sdr_mmio_block_held(&io, 0x0090b000, input, 64, false) == 0);
+    CHECK(event_count == 3 + 16);
+    CHECK(io_regs[map.bar / 4] == 0x33221100);
+    reset_events();
+    CHECK(sdr_mmio_block_held(&io, 0x0090b000, output, 64, true) == 0);
+    CHECK(event_count == 3 + 16 && !memcmp(input, output, 64));
+    CHECK(!io_begins && !io_ends);
+    reset_events();
+    CHECK(sdr_mmio_block_held(&io, 0x0090b001, output, 64, true) == -EINVAL);
+    CHECK(sdr_mmio_block_held(&io, 0xfffffffc, output, 8, false) == -EINVAL);
+    io.bar_size = 0x10000;
+    CHECK(sdr_mmio_block_held(&io, 0x820ccffc, output, 8, false) == -ERANGE);
+    CHECK(!event_count);
+}
+
 int main(void)
 {
+	scratch_blocks();
 	translation_matches_mt76();
 	reads_follow_windows();
 	reads_reject_before_any_access();
