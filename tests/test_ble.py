@@ -205,8 +205,9 @@ class ChannelTest(DecoderHarness, unittest.TestCase):
                 a = (C.c_uint32 * 2048)(*raw[start : start + 2048])
                 n = self.channel.ble_channel_run(state, a, 2048, out)
                 narrow.extend(out[: 2 * n])
-            got, _ = self.decode(narrow, ch=ch, chunk=2048, packed=True)
-            self.assertEqual(got, [SPEC_PDU], f"channel {ch}")
+            for packed in (False, True):
+                got, _ = self.decode(narrow, ch=ch, chunk=2048, packed=packed)
+                self.assertEqual(got, [SPEC_PDU], f"channel {ch}, packed={packed}")
 
 
 if __name__ == "__main__":

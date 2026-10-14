@@ -1,0 +1,175 @@
+{
+  "date": "2026-10-14",
+  "hardware": "W1700K2 / MT7996, ARM Cortex-A53",
+  "decoder_benchmark": {
+    "method": "10,000 repetitions of the published BLE channel-38 air vector, one valid packet per 2048-sample block; CLOCK_THREAD_CPUTIME_ID; no radio access",
+    "measurements": [
+      {
+        "bits": 16,
+        "blocks": 10000,
+        "packets": 10000,
+        "cpu_us_per_block": 45.692,
+        "wall_us_per_block": 95.934,
+        "core_fraction_at_2Msps": 0.04462
+      },
+      {
+        "bits": 8,
+        "blocks": 10000,
+        "packets": 10000,
+        "cpu_us_per_block": 47.393,
+        "wall_us_per_block": 100.281,
+        "core_fraction_at_2Msps": 0.04628
+      }
+    ]
+  },
+  "receiver_cpu_comparison": {
+    "method": "10-second deltas of receiver /proc/PID/stat utime + stime divided by CLK_TCK and monotonic elapsed time; includes all receiver threads and time in its kernel DMA-pump ioctl; excludes web server and radio WM/DSP processors",
+    "original_dsp_backend_core_equivalents": 3.1582400642753763,
+    "cpu_backend_core_equivalents": 2.6507489631228394,
+    "original_dsp_backend_repeat_core_equivalents": 3.1525845275655993
+  },
+  "cpu_live_90_seconds": {
+    "packets": {
+      "37": 1646,
+      "38": 4292,
+      "39": 1884
+    },
+    "reports": 267,
+    "max_lost_samples": 0,
+    "max_backlog_ms": 14.1568,
+    "last_status": {
+      "38": {
+        "raw_samples": 7125729280,
+        "lost_samples": 0,
+        "backlog_samples": 38912,
+        "packets": 4259,
+        "blocks": 86984,
+        "filter_and_io_cpu_s": 45.496923,
+        "decode_cpu_s": 3.724202,
+        "worker_cpu_s": 49.221126,
+        "elapsed_s": 89.071795
+      },
+      "39": {
+        "raw_samples": 7124320256,
+        "lost_samples": 0,
+        "backlog_samples": 389120,
+        "packets": 1870,
+        "blocks": 86966,
+        "filter_and_io_cpu_s": 45.382746,
+        "decode_cpu_s": 3.68239,
+        "worker_cpu_s": 49.065139,
+        "elapsed_s": 89.05855
+      },
+      "37": {
+        "raw_samples": 7123781632,
+        "lost_samples": 0,
+        "backlog_samples": 346112,
+        "packets": 1619,
+        "blocks": 86960,
+        "filter_and_io_cpu_s": 45.359363,
+        "decode_cpu_s": 3.686617,
+        "worker_cpu_s": 49.045982,
+        "elapsed_s": 89.051297
+      }
+    },
+    "end": [
+      {
+        "type": "tail",
+        "channel": 37,
+        "raw_samples": 14336,
+        "narrow_samples": 1638
+      },
+      {
+        "type": "tail",
+        "channel": 38,
+        "raw_samples": 143360,
+        "narrow_samples": 460
+      },
+      {
+        "type": "tail",
+        "channel": 39,
+        "raw_samples": 53248,
+        "narrow_samples": 665
+      },
+      {
+        "type": "stopped",
+        "errno": 0,
+        "malformed": 0,
+        "failed": 0
+      }
+    ],
+    "raw_dma": {
+      "sent": 3515639,
+      "retired": 3515639,
+      "wm_status": 0,
+      "wm_return": 0
+    }
+  },
+  "limitations": [
+    "Sequential live RF runs do not contain identical packets; packet counts cannot establish relative sensitivity.",
+    "The CPU benchmark packet duty cycle differs from live traffic and prior packet-containing DSP timing.",
+    "The old ~914 MB/s radio-local DMA benchmark is not a host-to-DSP or simultaneous capture bandwidth guarantee.",
+    "Zero reported input overruns does not establish that all transmitted advertisements were received.",
+    "Stop tails are reported separately from input overruns.",
+    "System-wide /proc/stat CPU accounting did not agree with process accounting under the busy DMA pump; only process accounting is used for the comparison."
+  ],
+  "dsp_control_tests": {
+    "modified_receiver_and_helper": {
+      "seconds": 30,
+      "packets": 2482,
+      "max_lost_samples": 0,
+      "max_backlog_ms": 765.184,
+      "final_backlog_ms": {
+        "37": 763.7248,
+        "38": 765.184,
+        "39": 758.144
+      },
+      "stopped": {
+        "type": "stopped",
+        "errno": 0,
+        "malformed": 0,
+        "failed": 0
+      }
+    },
+    "original_receiver_and_helper": {
+      "seconds": 30,
+      "packets": 2564,
+      "max_lost_samples": 0,
+      "max_backlog_ms": 708.3776,
+      "final_backlog_ms": {
+        "38": 0.2048,
+        "39": 0.1536,
+        "37": 0.1536
+      },
+      "stopped": {
+        "type": "stopped",
+        "errno": 0,
+        "malformed": 0,
+        "failed": 0
+      }
+    },
+    "modified_receiver_original_helper": {
+      "seconds": 30,
+      "packets": 2654,
+      "max_lost_samples": 0,
+      "max_backlog_ms": 13.8752,
+      "final_backlog_ms": {
+        "37": 0.2304,
+        "38": 0.2816,
+        "39": 0.2816
+      },
+      "stopped": {
+        "type": "stopped",
+        "errno": 0,
+        "malformed": 0,
+        "failed": 0
+      }
+    },
+    "interpretation": "The first two tests overlapped a separate CPU profiler. Both developed transient backlog; the original path subsequently caught up. The modified receiver with the original helper stayed caught up without profiling. These tests show sensitivity to competing work; they do not establish a new regression or unbounded continuous reception."
+  },
+  "sources_sha256": {
+    "host/ble/channel.c": "65419b90245add7011f83c734b52513312002b31834fe9226074636afc946212",
+    "host/ble/decode.c": "7af944659f8beae92d8b9408e5745d71e013f3318ff166e83b14e2402ffb7eae",
+    "tools/ble/benchmark.c": "fec99f3e229a78f76418566369bb01d1780ef54e9d4415cb9e1f6240e876b2f1"
+  }
+}

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Run the three-channel BLE DSP receiver after a fresh DSP firmware load."""
+"""Run the three-channel BLE receiver after a fresh firmware load."""
 
 import argparse
 import json
@@ -28,6 +28,7 @@ def main():
     p.add_argument("--receiver", type=Path, required=True)
     p.add_argument("--events", type=Path, required=True)
     p.add_argument("--seconds", type=int, default=86400)
+    p.add_argument("--decoder", choices=("cpu", "dsp"), default="cpu")
     a = p.parse_args()
     if not 1 <= a.seconds <= 86400:
         p.error("seconds must be 1..86400")
@@ -69,7 +70,9 @@ def main():
     signal.signal(signal.SIGINT, stop)
     with Wm(Unit(cfg.unit)) as w:
         healthy(w)
-        if w.session.streaming() or read(w, 0x81020010, 2) != [7, 0]:
+        if w.session.streaming() or (
+            a.decoder == "dsp" and read(w, 0x81020010, 2) != [7, 0]
+        ):
             raise RuntimeError("radio not idle / DSP not running")
         write(w, 0x00912000, unpack(code))
         if packed(read(w, 0x00912000, len(code) // 4)) != code:
@@ -78,9 +81,11 @@ def main():
         cr0 = read(w, 0x80023090, 1)[0]
         w.write(ROUTE)
         w.session.ctl([(0x0090F008, 0)])
-        before = w.start(0x00912000, 0)
+        before = w.start(0x00912000, int(a.decoder == "cpu"))
         try:
-            child = subprocess.Popen([str(a.receiver), str(a.events), str(a.seconds)])
+            child = subprocess.Popen(
+                [str(a.receiver), str(a.events), str(a.seconds), a.decoder]
+            )
             if stopping:
                 child.terminate()
             rc = child.wait()

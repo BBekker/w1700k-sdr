@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include "../../include/uapi/w1700k_sdr.h"
 #include "channel.h"
+#include "decode.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -17,6 +18,7 @@
 #include <time.h>
 #include <unistd.h>
 static int fd;
+static int cpu_decode = 1;
 static FILE *events;
 static const char *event_path;
 static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -30,6 +32,12 @@ static uint64_t ns(void)
 {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+static uint64_t cpu_ns(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t);
     return (uint64_t)t.tv_sec * 1000000000 + t.tv_nsec;
 }
 static int running(void)
@@ -78,7 +86,9 @@ static void fatal(const char *what)
 }
 struct worker {
     unsigned core, sequence, collected, inflight;
-    uint64_t next, raw_samples, lost, compute_ns;
+    uint64_t next, raw_samples, lost, compute_ns, decode_ns;
+    uint64_t started_ns, started_cpu_ns;
+    struct ble_decoder decoder;
     atomic_uint_fast64_t packets, blocks, dsp_cycles, submit_ns, collect_ns, write_ns, meta_ns,
         output_ns, polls, cycle_blocks;
     struct ble_channel filter;
@@ -92,6 +102,42 @@ struct worker {
         unsigned reset;
     } queue[16];
 };
+/* Caller owns log_lock. CPU and DSP backends publish the same packet schema. */
+static void packet(struct worker *w, unsigned sample, const unsigned char *p, unsigned len)
+{
+    fprintf(events,
+            "{\"type\":\"packet\",\"time\":%.6f,\"channel\":%u,\"core\":%u,\"sample\":%u,"
+            "\"pdu\":\"",
+            wall_time(), 37 + w->core, w->core, sample);
+    for (unsigned k = 0; k < len; k++)
+        fprintf(events, "%02x", p[k]);
+    fprintf(events, "\",\"crc\":\"%02x%02x%02x\",\"crc_valid\":true}\n", p[len], p[len + 1],
+            p[len + 2]);
+    w->packets++;
+}
+static int decode_local(struct worker *w)
+{
+    struct ble_output out;
+    uint64_t t = cpu_ns();
+    if (w->reset)
+        ble_reset(&w->decoder, 37 + w->core);
+    ble_decode(&w->decoder, w->input, w->used, &out);
+    w->decode_ns += cpu_ns() - t;
+    w->blocks++;
+    if (out.count || out.dropped) {
+        pthread_mutex_lock(&log_lock);
+        if (out.dropped)
+            fprintf(events, "{\"type\":\"error\",\"message\":\"CPU event buffer overflow\","
+                            "\"channel\":%u,\"dropped\":%u}\n", 37 + w->core, out.dropped);
+        for (unsigned j = 0; j < out.count; j++)
+            packet(w, out.packets[j].sample, out.packets[j].pdu, out.packets[j].length);
+        fflush(events);
+        trim_log();
+        pthread_mutex_unlock(&log_lock);
+    }
+    w->used = w->reset = 0;
+    return 0;
+}
 static int collect(struct worker *w)
 {
     if (!w->inflight)
@@ -155,15 +201,7 @@ static int collect(struct worker *w)
             return -1;
         }
         unsigned char *p = (unsigned char *)(output + at);
-        fprintf(events,
-                "{\"type\":\"packet\",\"time\":%.6f,\"channel\":%u,\"core\":%u,\"sample\":%u,"
-                "\"pdu\":\"",
-                wall_time(), 37 + w->core, w->core, sample);
-        for (unsigned k = 0; k < len; k++)
-            fprintf(events, "%02x", p[k]);
-        fprintf(events, "\",\"crc\":\"%02x%02x%02x\",\"crc_valid\":true}\n", p[len], p[len + 1],
-                p[len + 2]);
-        w->packets++;
+        packet(w, sample, p, len);
         at += (len + 6) / 4;
     }
     fflush(events);
@@ -177,6 +215,8 @@ static int collect(struct worker *w)
  * consumer retains tail through the synchronous ioctl, then releases it. */
 static int enqueue(struct worker *w)
 {
+    if (cpu_decode)
+        return decode_local(w);
     pthread_mutex_lock(&w->queue_lock);
     while (w->head - w->tail == 16 && running())
         pthread_cond_wait(&w->changed, &w->queue_lock);
@@ -285,11 +325,20 @@ static void *consume(void *arg)
     w->reset = 1;
     w->next = first_seq;
     uint64_t report = ns();
+    w->started_ns = report;
+    w->started_cpu_ns = cpu_ns();
     int16_t narrow[208];
     while (running()) {
         uint64_t c = completed();
         if (c == w->next) {
-            sched_yield();
+            /* Local decoding has no sub-millisecond mailbox deadline. Let
+             * raw DMA accumulate a batch instead of burning a core polling.
+             * This kernel rounds the 1 ms request to its ~4 ms tick. */
+            if (cpu_decode) {
+                struct timespec pause = {.tv_nsec = 1000000};
+                nanosleep(&pause, NULL);
+            } else
+                sched_yield();
             continue;
         }
         if (c - w->next > ring->slices - ring->slots - 1024) {
@@ -327,17 +376,22 @@ static void *consume(void *arg)
         }
         if (ns() - report >= 1000000000u) {
             pthread_mutex_lock(&log_lock);
+            uint64_t worker_cpu = cpu_ns() - w->started_cpu_ns;
             fprintf(events,
                     "{\"type\":\"status\",\"channel\":%u,\"raw_samples\":%llu,\"lost_samples\":%"
                     "llu,\"backlog_samples\":%llu,\"packets\":%llu,\"compute_s\":%.3f,\"submit_s\":"
                     "%.3f,\"collect_s\":%.3f,\"write_s\":%.3f,\"meta_s\":%.3f,"
-                    "\"output_s\":%.3f,\"polls\":%llu,\"blocks\":%llu,\"dsp_us\":%.3f}\n",
+                    "\"output_s\":%.3f,\"polls\":%llu,\"blocks\":%llu,\"dsp_us\":%.3f,"
+                    "\"decoder\":\"%s\",\"filter_and_io_cpu_s\":%.6f,\"decode_cpu_s\":%.6f,"
+                    "\"worker_cpu_s\":%.6f,\"elapsed_s\":%.6f}\n",
                     37 + w->core, (unsigned long long)w->raw_samples, (unsigned long long)w->lost,
                     (unsigned long long)((completed() - w->next) * 2048),
                     (unsigned long long)w->packets, w->compute_ns / 1e9, w->submit_ns / 1e9,
                     w->collect_ns / 1e9, w->write_ns / 1e9, w->meta_ns / 1e9, w->output_ns / 1e9,
                     (unsigned long long)w->polls, (unsigned long long)w->blocks,
-                    w->cycle_blocks ? (double)w->dsp_cycles / w->cycle_blocks / 640 : 0);
+                    w->cycle_blocks ? (double)w->dsp_cycles / w->cycle_blocks / 640 : 0,
+                    cpu_decode ? "cpu" : "dsp", (worker_cpu - w->decode_ns) / 1e9,
+                    w->decode_ns / 1e9, worker_cpu / 1e9, (ns() - w->started_ns) / 1e9);
             fflush(events);
             trim_log();
             pthread_mutex_unlock(&log_lock);
@@ -353,9 +407,14 @@ static void signal_handler(int s)
 }
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
-        fprintf(stderr, "usage: ble-receiver EVENTS.jsonl SECONDS\n");
+    if (argc != 3 && argc != 4) {
+        fprintf(stderr, "usage: ble-receiver EVENTS.jsonl SECONDS [cpu|dsp]\n");
         return 2;
+    }
+    if (argc == 4) {
+        if (strcmp(argv[3], "cpu") && strcmp(argv[3], "dsp"))
+            return 2;
+        cpu_decode = !strcmp(argv[3], "cpu");
     }
     char *end;
     unsigned long seconds = strtoul(argv[2], &end, 10);
@@ -367,7 +426,8 @@ int main(int argc, char **argv)
         perror("events");
         return 1;
     }
-    fprintf(events, "{\"type\":\"start\",\"sample_rate\":80000000}\n");
+    fprintf(events, "{\"type\":\"start\",\"sample_rate\":80000000,\"decoder\":\"%s\"}\n",
+            cpu_decode ? "cpu" : "dsp");
     fflush(events);
     fd = open("/dev/w1700k-sdr", O_RDWR | O_CLOEXEC);
     if (fd < 0) {
@@ -403,7 +463,7 @@ int main(int argc, char **argv)
         workers[b].core = b;
         pthread_mutex_init(&workers[b].queue_lock, NULL);
         pthread_cond_init(&workers[b].changed, NULL);
-        if (pthread_create(&feeders[b], NULL, feed_dsp, &workers[b]))
+        if (!cpu_decode && pthread_create(&feeders[b], NULL, feed_dsp, &workers[b]))
             return 1;
         if (pthread_create(&threads[b], NULL, consume, &workers[b]))
             return 1;
@@ -429,11 +489,13 @@ int main(int argc, char **argv)
     }
     for (unsigned b = 0; b < 3; b++) {
         pthread_join(threads[b], NULL);
-        pthread_join(feeders[b], NULL);
+        if (!cpu_decode)
+            pthread_join(feeders[b], NULL);
     }
     for (unsigned b = 0; b < 3; b++) {
         /* The producer has retired; collect any completed final block once. */
-        (void)collect(&workers[b]);
+        if (!cpu_decode)
+            (void)collect(&workers[b]);
         fprintf(events,
                 "{\"type\":\"tail\",\"channel\":%u,\"raw_samples\":%llu,\"narrow_samples\":%u}\n",
                 37 + b, (unsigned long long)((completed() - workers[b].next) * 2048),

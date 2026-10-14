@@ -19,7 +19,11 @@ LOCK = HERE / "service.lock"
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("start", "stop", "run", "status"))
+    parser.add_argument("--decoder", choices=("cpu", "dsp"), default="cpu")
+    parser.add_argument("--seconds", type=int, default=86400)
     args = parser.parse_args()
+    if not 1 <= args.seconds <= 86400:
+        parser.error("seconds must be 1..86400")
     lock = LOCK.open("a")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -50,7 +54,15 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_UN)
         with (HERE / "service.log").open("w") as log:
             subprocess.Popen(
-                [sys.executable, str(__file__), "run"],
+                [
+                    sys.executable,
+                    str(__file__),
+                    "run",
+                    "--decoder",
+                    args.decoder,
+                    "--seconds",
+                    str(args.seconds),
+                ],
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=log,
@@ -112,6 +124,8 @@ def main():
             ],
             ["/opt/w1700k/bin/w1700k", "--config", cfg, "filter", "80"],
         ]
+        if args.decoder == "cpu":
+            commands[0] = ["/opt/w1700k/bin/w1700k", "--config", cfg, "load", "--band", "0"]
         for command in commands:
             if stopped:
                 return
@@ -132,7 +146,9 @@ def main():
                 "--events",
                 str(HERE / "events.jsonl"),
                 "--seconds",
-                "86400",
+                str(args.seconds),
+                "--decoder",
+                args.decoder,
             ],
             env=env,
         )

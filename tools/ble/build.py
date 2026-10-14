@@ -35,6 +35,7 @@ def main():
             "-pthread",
             "-static",
             str(ROOT / "host/ble/channel.c"),
+            str(ROOT / "host/ble/decode.c"),
             str(ROOT / "host/ble/receiver.c"),
             "-lm",
             "-o",

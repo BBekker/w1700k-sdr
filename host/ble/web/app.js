@@ -70,7 +70,14 @@ function render(s) {
     const bottom = element("div", undefined, "channel-bottom");
     bottom.append(
       element("span", `${num(c.packets)} packets`),
-      element("span", `DSP ${ch - 37}`),
+      element(
+        "span",
+        s.decoder === "dsp"
+          ? `DSP ${ch - 37}`
+          : s.decoder === "cpu"
+            ? "Router CPU"
+            : "Waiting",
+      ),
     );
     div.append(top, h, bottom);
     cards.append(div);

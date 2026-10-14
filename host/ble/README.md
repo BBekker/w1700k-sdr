@@ -1,4 +1,4 @@
-# Three-channel BLE DSP receiver
+# Three-channel BLE receiver
 
 Receive LE 1M packets on primary advertising channels 37, 38 and 39 at the same
 time, and browse CRC-verified advertisements and scan responses on the router.
@@ -10,32 +10,65 @@ the upstream DMA pull request.
 One band-0 capture at **80 Msps, LO 2441 MHz, analog filter 80 MHz** covers all
 three centers: 2402, 2426 and 2480 MHz. There is no channel hopping.
 
-1. `tools/dsp/wm-ble.c` continuously moves the radio's ICAP ring to the host's
-   WFDMA ring using MCU_DMA0. Raw samples stay inside the router.
-2. `channel.c` uses one ARM worker per channel to translate its frequency, apply
-   an 8-sample averaging filter and a third-order CIC decimator, and produce
-   2 Msps complex I/Q. ARM NEON accelerates this stage. Filter and oscillator
-   state continue across DMA blocks.
-3. Bounded queues let filtering overlap transfers. Each 2048-sample block is
-   scaled by a common power of two to signed 8-bit I/Q. The input mailbox transfer
-   is **12 MB/s total**, versus 24 MB/s for 16-bit samples. This trades quantization
-   precision for the measured host-to-radio SRAM bandwidth limit.
-4. The driver writes the block and publishes its request in one `BLOCK` ioctl.
-   MEM_DMA transfers it from SRAM to the assigned DSP's DTCM. DSP 0 receives
-   channel 37, DSP 1 channel 38, and DSP 2 channel 39.
-5. DSP operation 8 runs the phase discriminator, two symbol-timing hypotheses,
-   advertising access-address search, dewhitening, PDU length validation and
-   CRC24 verification. Decoder state survives block boundaries. Only verified
-   packets return to the CPU; the CPU parses advertising data for display.
-6. `server.py` serves the local website on port **8074**, with names, addresses,
-   channel, packet type, advertising fields, raw PDU/CRC, search and JSONL export.
+The default backend is now **CPU-local filtering and decoding**:
 
-The DSP decoder uses integer instructions; it does not use the FFT routine or
-claim vectorized DSP decoding. Channel filtering still runs on the ARM CPU.
-Input uses MEM_DMA; the small decoded results are copied through SRAM by WM and
-read by the host. This is not an entirely CPU-free or end-to-end zero-copy path.
+```text
+Radio ICAP ring --MCU_DMA0 / WFDMA--> host ring (320 MB/s)
+                                     | three ARM NEON channel filters
+                                     v
+                                  2 Msps/channel, 12-bit I/Q in int16
+                                     | decode in the same worker
+                                     v
+                                verified packets --> local website
+```
 
-### Ownership and timing
+Each worker translates its frequency, applies an 8-sample averaging filter and
+a third-order CIC decimator, then runs the phase discriminator, two timing
+hypotheses, access-address search, dewhitening and CRC24 validation. Filter and
+decoder state survive block boundaries. The decoder consumes the filter's output
+in the same thread; no quantization, feeder queue, return transfer to the radio,
+or completion polling is needed. Workers sleep briefly when caught up. The
+kernel's 4 ms tick batches raw input; it no longer controls a DSP handoff deadline.
+No real-time scheduling or research DSP image is required by the CPU backend.
+The raw DMA helper bypasses all DSP and MEM_DMA accesses in this mode.
+
+### Why the default changed
+
+Offloading just decoding moved the cheapest stage across the most expensive
+boundary. On this router the same decoder took **45.692 us per 2048 samples**
+on ARM (16-bit input), or 4.46% of one core at 2 Msps, in a synthetic benchmark
+with one CRC-valid packet in every block. The prior DSP path measured about
+83 us on packet-containing blocks, plus approximately 247 us merely to write
+4096 input bytes through the PCIe register window in an idle transfer benchmark.
+These are different workloads/measurement conditions; they establish the scale
+of the overhead, not an exact CPU/DSP speed ratio.
+
+The ~16.6 MB/s input-write measurement is **CPU-driven MMIO**, not the PCIe link's
+DMA bandwidth. Raw DMA already carries 320 MB/s to host memory. The older
+~914 MB/s repeated-buffer result measures **radio-local MEM_DMA**, including
+its descriptor recycling, from radio SRAM to DSP memory. It does not measure
+host-memory-to-DSP DMA or guarantee that rate alongside continuous capture.
+
+An all-radio backend would need to channelize before sending samples to the
+host. Simply sending the entire raw stream to each DSP would require 960 MB/s
+of aggregate input copying, above that older MEM_DMA result. A shared channelizer
+or time-partitioned processing with explicit filter/decoder state ownership,
+plus a measured fast DSP filter kernel, is needed first. The earlier extrapolation
+of ~36 channels from decoder time alone is not a receiver capacity estimate.
+This change does not claim to implement that all-radio design.
+
+### Optional DSP comparison backend
+
+`--decoder dsp` retains the prior implementation: ARM channel filtering, bounded
+queues, common-power-of-two scaling to 8-bit I/Q, and 12 MB/s of host-written
+input mailboxes. MEM_DMA then transfers each mailbox into its assigned DSP's
+DTCM. DSP operation 8 demodulates and decodes; only verified packets return.
+DSP 0/1/2 handle channels 37/38/39. It uses scalar integer instructions.
+
+The website labels the active decoder. Both backends use the same decoder source
+and packet schema. The CPU version keeps the filter's full 12-bit sample precision.
+
+### DSP backend ownership and timing
 
 Each core has one input/output mailbox. The host consumes the previous output
 before reusing the input. WM publishes the result sequence **after** all result
@@ -89,8 +122,9 @@ export PYTHONHOME=/opt/w1700k PYTHONPATH=/opt/w1700k/host PYTHONDONTWRITEBYTECOD
 /opt/w1700k/bin/python3 /work/ble/service.py start
 ```
 
-Initialization loads the research DSP image through the normal firmware loader
-and configures band 0. It takes about a minute. Open `http://<router-address>:8074/`.
+Initialization loads the normal project firmware and configures band 0.
+For the DSP comparison, stop the service and start with `--decoder dsp`; that
+mode loads the research DSP image through the normal firmware loader. It takes about a minute. Open `http://<router-address>:8074/`.
 Use the same service command with `status` or `stop`; diagnostics are in
 `/work/ble/service.log`. The capture is bounded to 24 hours, after which the
 website retains the last results; stop/start begins another capture.
@@ -98,17 +132,37 @@ website retains the last results; stop/start begins another capture.
 This installation is in RAM and does not survive reboot. To return to FFT, stop
 BLE and run `/work/dsp-live/dsp-viewer start`, which loads its own saved image.
 
-For a bounded hardware check after loading/configuring the DSPs:
+For a bounded hardware check after loading/configuring the selected backend:
 
 ```sh
 /opt/w1700k/bin/python3 /work/ble/receive.py \
   --config /work/ble/config.json --helper /work/ble/wm-ble.bin \
-  --receiver /work/ble/ble-receiver --events /work/ble/events.jsonl --seconds 90
+  --receiver /work/ble/ble-receiver --events /work/ble/events.jsonl --seconds 90 --decoder cpu
 ```
 
 ## Validation and limits
 
-A 90-second live run with the website open decoded **6556 CRC-valid packets**:
+The CPU backend's 90-second hardware run decoded **7822 CRC-valid packets**:
+1646 on channel 37, 4292 on channel 38 and 1884 on channel 39. All 267 periodic
+channel reports showed zero input overruns; the largest sampled backlog was
+14.157 ms. WM sent and retired all 3,515,639 raw DMA buffers, and the receiver
+exited with no malformed buffers or failures. A preceding instrumented CPU run
+also completed 90 seconds without overruns. These are sequential live captures,
+not a sensitivity comparison with the DSP backend.
+
+Ten-second process CPU measurements decreased from **3.158 to 2.651 core
+equivalents** (about 16%). These include the receiver's kernel DMA-pump time,
+but exclude the separate web server and radio processors. Live decoding consumes
+about 0.125 core across all three channels; filtering and channel-worker
+bookkeeping consume about 1.53 cores, and the raw DMA pump approximately one.
+[Measurements and limits](performance-results.json) retain aggregate results
+without captured advertisements. A repeat of the original DSP implementation
+measured 3.153 cores. Short DSP control runs showed transient backlog during
+profiling in both the old and modified paths; the original recovered afterward.
+The retained DSP backend should still be treated as an experiment, not a guarantee
+of continuous reception under competing load.
+
+The original DSP backend's 90-second live run with the website open decoded **6556 CRC-valid packets**:
 1526 on channel 37, 3523 on channel 38, and 1507 on channel 39. All 267 periodic
 channel reports showed **zero input overruns**. The largest sampled raw-input
 backlog was 18.688 ms; final periodic reports were 0.154–0.256 ms. Each DSP
@@ -120,7 +174,7 @@ is a bounded hardware validation, not a long-term reliability claim.
 air vector, CRC rejection, wrong-channel rejection, frequency offsets, block
 boundaries and quantized input. A synthetic wideband waveform contains three
 simultaneous GFSK advertisements and passes through the actual channelizer and
-decoder. NumPy is needed for that test. `tests/test_ble_web.py` checks parsing,
+both decoder input formats. NumPy is needed for that test. `tests/test_ble_web.py` checks parsing,
 CRC gating, retention, status and HTTP responses. Driver helper tests cover
 mapping, bulk byte order, rejection before bus access, ownership and pump behavior.
 
@@ -131,8 +185,8 @@ PYTHONPATH=tests python3 -m unittest test_ble test_ble_web -v
 The website reports input overruns and processing backlog; zero overruns means
 the software consumed its capture, **not** that every nearby transmission was
 received. RF collisions, interference, weak signals, oscillator error and filter
-selectivity still affect packet reception. The lightweight channelizer and
-8-bit handoff are not a calibrated Bluetooth measurement receiver. Sensitivity
+selectivity still affect packet reception. The lightweight channelizer is not a calibrated Bluetooth measurement receiver.
+The optional DSP backend additionally quantizes its handoff to 8-bit I/Q. Sensitivity
 at the outer channels has not been characterized.
 
 This receiver is passive: it transmits no scan requests and can show scan
@@ -150,3 +204,32 @@ browser, and the HTTP service has no radio-control or transmission endpoints.
 
 Protocol references: [Bluetooth Core sample data, §4.2.1](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/low-energy-controller/sample-data.html)
 and [LE Link Layer specification](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-62/out/en/low-energy-controller/link-layer-specification.html).
+
+## Performance measurement
+
+`tools/ble/benchmark.c` benchmarks the exact decoder on the router without radio
+access. Compile it with `host/ble/decode.c` and `-lm`, using the same ARM flags as
+`tools/ble/build.py`. Each format must decode all 10,000 published-specification
+packets without CRC failures. It reports thread CPU time separately from wall
+time, so scheduling contention is not mistaken for decoder cost.
+
+Live status records distinguish `decode_cpu_s` (CPU decoder calls),
+`filter_and_io_cpu_s` (the channel worker's remaining CPU time, including filtering,
+ring handling and packet logging), and `worker_cpu_s` (their total). Divide by
+`elapsed_s` for core equivalents. These exclude the main kernel DMA pump and,
+in DSP mode, feeder threads. `compute_s`, `submit_s`, `collect_s`, `write_s`,
+`meta_s` and `output_s` are wall durations, can overlap, and must not be summed
+as CPU utilization. System-wide `/proc/stat` accounting disagreed with process
+accounting while the busy DMA pump ran, so the comparison uses process accounting.
+`dsp_us` samples packet-containing blocks only. CPU-mode
+mailbox counters are zero. The main DMA pump is still required and consumes CPU;
+this redesign removes the narrowband round trip, not raw host streaming.
+
+For a bounded service run including the website:
+
+```sh
+/opt/w1700k/bin/python3 /work/ble/service.py start --decoder cpu --seconds 90
+```
+
+The website remains available after the capture stops. Stop/start without
+`--seconds` restores the normal 24-hour capture.

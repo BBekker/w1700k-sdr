@@ -109,12 +109,14 @@ class State:
         self.errors = 0
         self.stopped = False
         self.started = time.time()
+        self.decoder = "unknown"
 
     def ingest(self, event):
         with self.lock:
             typ = event.get("type")
             now = time.time()
             if typ == "start":
+                self.decoder = event.get("decoder", "dsp")
                 self.packets.clear()
                 self.total = self.errors = 0
                 self.channels = {
@@ -143,6 +145,8 @@ class State:
                 self.packets.append(packet)
                 self.channels[str(event["channel"])]["packets"] += 1
             elif typ == "status" and event.get("channel") in (37, 38, 39):
+                if event.get("decoder") in ("cpu", "dsp"):
+                    self.decoder = event["decoder"]
                 ch = self.channels[str(event["channel"])]
                 ch.update(event, last_status=now)
                 self.stopped = False
@@ -172,7 +176,10 @@ class State:
                 "errors": self.errors,
                 "stopped": self.stopped,
                 "phy": "LE 1M",
-                "backend": "Three radio DSPs",
+                "backend": {"cpu": "Router CPU", "dsp": "Three radio DSPs"}.get(
+                    self.decoder, "Waiting"
+                ),
+                "decoder": self.decoder,
                 "sample_rate": 80000000,
                 "time": now,
             }

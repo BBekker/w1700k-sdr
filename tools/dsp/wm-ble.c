@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Continuous wideband ICAP -> host DMA, plus three host-channelized IQ mailboxes
  * -> MEM_DMA -> dedicated BLE DSP decoders. Header/payload ownership is req/ack.
- * The CPU does channel selection; the DSPs perform demodulation and decoding. */
+ * host_decode=1 selects raw DMA only: no DSP or MEM_DMA access. The host then
+ * filters and decodes locally, eliminating the sample round trip. */
 #include "../../host/ble/decode.h"
 #include "wm-output.c"
 #define MEM(o) R(0x58000000u + (o))
@@ -17,12 +18,14 @@
 static inline void fence(void) { __asm__ volatile("fence iorw,iorw" ::: "memory"); }
 static inline uint32_t head(void) { return ((R(0x800230b4) << 2) + 16u) & (RING - 1); }
 
-__attribute__((section(".text.entry.pipeline"))) uint32_t ble_stream(uint32_t unused)
+__attribute__((section(".text.entry.pipeline"))) uint32_t ble_stream(uint32_t host_decode)
 {
-    (void)unused;
+    if (host_decode > 1)
+        return 14;
     uint32_t cpu = R(MT7996_MCU_DMA0_TX0_CIDX), retired = cpu;
     uint32_t desc = R(MT7996_MCU_DMA0_TX0_BASE), slots = R(MT7996_MCU_DMA0_TX0_ADAPTER + 8);
-    uint32_t cfg = MEM(0x208), pending[3] = {0}, req[3] = {0}, hostreq[3] = {0}, started[3] = {0};
+    uint32_t cfg = host_decode ? 0 : MEM(0x208);
+    uint32_t pending[3] = {0}, req[3] = {0}, hostreq[3] = {0}, started[3] = {0};
     uint32_t dma = 0, dma_core = 0, dma_seq = 0, dma_time = 0, prev = 0, status = 0, stopping = 0;
     uint32_t maxlag = 0, last = cycles();
     uint64_t sent = 0, done = 0, written = 0, lap = 0;
@@ -31,37 +34,39 @@ __attribute__((section(".text.entry.pipeline"))) uint32_t ble_stream(uint32_t un
     ST[0] = 0x424c4531;
     ST[1] = 1;
     if (cpu != R(MT7996_MCU_DMA0_TX0_DIDX) || cpu != R(MT7996_MCU_DMA0_TX0_ADAPTER + 0x2c) ||
-        (cfg & 10) || MEM(0x308) != MEM(0x30c) || (C0 & 3) || GRANT)
+        (!host_decode && ((cfg & 10) || MEM(0x308) != MEM(0x30c))) || (C0 & 3) || GRANT)
         return ST[2] = 1;
-    for (unsigned b = 0; b < 3; b++) {
-        if (BOX(b)[0] != 0x44535031 || BOX(b)[10] != 1 || BOX(b)[1] != BOX(b)[2])
-            return ST[2] = 2;
-        req[b] = BOX(b)[1];
-        for (unsigned j = 0; j < 8; j++)
-            META(b)[j] = 0;
-        R(0x0090e004u + 1024 * b) = 0;
+    if (!host_decode) {
+        for (unsigned b = 0; b < 3; b++) {
+            if (BOX(b)[0] != 0x44535031 || BOX(b)[10] != 1 || BOX(b)[1] != BOX(b)[2])
+                return ST[2] = 2;
+            req[b] = BOX(b)[1];
+            for (unsigned j = 0; j < 8; j++)
+                META(b)[j] = 0;
+            R(0x0090e004u + 1024 * b) = 0;
+        }
+        MEM(0x208) = cfg & ~5u;
+        for (unsigned i = 0; i < 8; i++) {
+            unsigned b = i % 3;
+            TX[4 * i] = 0x0090b000u + 4096 * b;
+            TX[4 * i + 1] = 0x80000000u;
+            TX[4 * i + 2] = TX[4 * i + 3] = 0;
+            RX[4 * i] = 0x86204000u + (b << 22);
+            RX[4 * i + 1] = 4096u << 16;
+            RX[4 * i + 2] = RX[4 * i + 3] = 0;
+        }
+        fence();
+        MEM(0x300) = 0x00910800;
+        MEM(0x304) = 8;
+        MEM(0x308) = 0;
+        MEM(0x500) = 0x00910900;
+        MEM(0x504) = 8;
+        MEM(0x508) = 0;
+        MEM(0x20c) = 1;
+        MEM(0x280) = 1;
+        MEM(0x508) = 7;
+        MEM(0x208) = (cfg & ~10u) | 5;
     }
-    MEM(0x208) = cfg & ~5u;
-    for (unsigned i = 0; i < 8; i++) {
-        unsigned b = i % 3;
-        TX[4 * i] = 0x0090b000u + 4096 * b;
-        TX[4 * i + 1] = 0x80000000u;
-        TX[4 * i + 2] = TX[4 * i + 3] = 0;
-        RX[4 * i] = 0x86204000u + (b << 22);
-        RX[4 * i + 1] = 4096u << 16;
-        RX[4 * i + 2] = RX[4 * i + 3] = 0;
-    }
-    fence();
-    MEM(0x300) = 0x00910800;
-    MEM(0x304) = 8;
-    MEM(0x308) = 0;
-    MEM(0x500) = 0x00910900;
-    MEM(0x504) = 8;
-    MEM(0x508) = 0;
-    MEM(0x20c) = 1;
-    MEM(0x280) = 1;
-    MEM(0x508) = 7;
-    MEM(0x208) = (cfg & ~10u) | 5;
     uint32_t wait = cycles();
     while (R(GO) != 0x474f474f)
         if (cycles() - wait > 1440000000u) {
@@ -154,7 +159,7 @@ __attribute__((section(".text.entry.pipeline"))) uint32_t ble_stream(uint32_t un
                 break;
             }
         }
-        for (unsigned b = 0; b < 3; b++)
+        for (unsigned b = 0; !host_decode && b < 3; b++)
             if (pending[b]) {
                 if (BOX(b)[2] == req[b]) {
                     fence();
@@ -207,7 +212,7 @@ __attribute__((section(".text.entry.pipeline"))) uint32_t ble_stream(uint32_t un
                     goto finish;
                 }
             }
-        if (!dma && !stopping) {
+        if (!host_decode && !dma && !stopping) {
             unsigned b = dma_seq % 3;
             if (!pending[b] && META(b)[0] != META(b)[1]) {
                 if (META(b)[3] != 2048) {
@@ -238,7 +243,8 @@ finish:
             status = 13;
             break;
         }
-    MEM(0x208) = cfg & ~5u;
+    if (!host_decode)
+        MEM(0x208) = cfg & ~5u;
     C0 = 0x400;
     GRANT = 0;
     if (!status) {
@@ -252,7 +258,7 @@ finish:
     ST[3] = sent;
     ST[4] = done;
     ST[5] = maxlag;
-    ST[6] = MEM(0x110);
+    ST[6] = host_decode ? 0 : MEM(0x110);
     ST[7] = R(MT7996_MCU_DMA0_INT_STA);
     fence();
     ST[1] = 3;

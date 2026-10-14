@@ -55,6 +55,20 @@ class BLEWebTest(unittest.TestCase):
         state.ingest({"type": "stopped"})
         self.assertFalse(state.snapshot()["channels"]["38"]["active"])
 
+    def test_backend_changes_with_new_capture(self):
+        state = web.State()
+        self.assertEqual(state.snapshot()["decoder"], "unknown")
+        state.ingest({"type": "start", "decoder": "cpu"})
+        self.assertEqual(state.snapshot()["backend"], "Router CPU")
+        state.ingest({"type": "start", "decoder": "dsp"})
+        self.assertEqual(state.snapshot()["backend"], "Three radio DSPs")
+        # Older capture logs predate the backend field and used DSP decoding.
+        state.ingest({"type": "start"})
+        self.assertEqual(state.snapshot()["decoder"], "dsp")
+        # A server restarted after log rotation may first see a status record.
+        state.ingest({"type": "status", "channel": 37, "decoder": "cpu"})
+        self.assertEqual(state.snapshot()["decoder"], "cpu")
+
     def test_http_resources_and_export(self):
         state = web.State()
         server = ThreadingHTTPServer(
