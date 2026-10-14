@@ -1,5 +1,17 @@
 # MT7996 DSP FFT and direct sample DMA research
 
+An experimental [DSP0 web viewer backend](LIVE.md) now builds on this research.
+The current viewer pipelines three DSPs with two input and output banks each,
+using MEM_DMA for inputs and MCU_DMA0 for outputs into the host DMA ring. It
+measured about 9,047 FFTs/s with no result packet loss in the bounded checks;
+[details and limitations](pipeline-results.json). Capture still has gaps because
+compute capacity is below the 40 Msps source. The measurements below describe
+the original transfer/FFT experiments.
+The newer float viewer kernel takes about 328 us for a complete 2048-point
+windowed power spectrum, down from 606 us; see [performance-results.json](performance-results.json).
+An opt-in custom-MAC fixed-point experiment is slower and less accurate, so the
+viewer uses the optimized scalar float/FMA path. Vector execution is not established.
+
 MEM_DMA can move received IQ from the radio capture pool directly into DSP0
 DTCM. WM submits descriptors and polls completion; neither WM nor the application
 CPU copies the sample payload. DSP0 then unpacks signed 14-bit IQ and runs an FFT.

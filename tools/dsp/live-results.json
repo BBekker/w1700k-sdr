@@ -1,0 +1,34 @@
+{
+  "date": "2026-10-14",
+  "mode": "DSP0 snapshot viewer; band 0, 40 Msps, 2048 points, periodic Hann, DC removal",
+  "validation": {
+    "all_bins": 2048,
+    "relative_power_l2_error": 1.0554751408162811e-07,
+    "unique_raw_words": 1985,
+    "dsp_us": 612.79375,
+    "dma_us": 8.725,
+    "passed": true
+  },
+  "observed_frames_per_second": 19.2,
+  "cpu_measurement": {
+    "duration_seconds": 5,
+    "baseline_system_busy_percent": 31.72,
+    "dsp_system_busy_percent": 9.6,
+    "baseline_viewer_process_percent_one_core": 25.24,
+    "dsp_viewer_process_percent_one_core": 2.75,
+    "note": "Short separate snapshots, not equal-resolution benchmark: CPU viewer used 32768 points and full raw-stream ingestion; DSP preview uses 2048-point snapshots. Python/driver control and output reads still consume CPU."
+  },
+  "limitations": [
+    "DSP0 only; cores 1 and 2 not tested.",
+    "Fixed 2048-point Hann/DC removal; band 0 at 40 Msps.",
+    "Snapshots cover about 0.098% of incoming sample time, not continuous full-rate FFT.",
+    "Receiver controls disabled to prevent concurrent capture/reconfiguration. Stop the producer before tuning.",
+    "Deployment is RAM-only; reboot restores the CPU viewer."
+  ],
+  "sha256": {
+    "tools/dsp/spectrum.c": "fd31b2e23c58b57c6c798342501be75ee57e97030d4e5f3840453ba7b90f3d21",
+    "tools/dsp/wm-live.c": "697ec0c43b9a3fae073ac01873aefef41a4e0895eb23998b8c5d8387456d08e2",
+    "tools/dsp/build/dsp.bin": "d5482743b950453b3c3f7e79e17393969e9dc9245988dd8a855fb324ba66c01f",
+    "tools/dsp/build/wm-live.bin": "bca9e5cbb46b83fa8be64877f345b1cef9d3a57fdcdd3514a9cf6f956b8775a3"
+  }
+}

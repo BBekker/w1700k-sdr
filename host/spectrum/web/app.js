@@ -709,6 +709,7 @@ function onStatus(m) {
     const [stateText, stateClass] = states[s.state] || [s.state, ''];
     setPill('pill-state', stateText, stateClass);
     showControl(s.controller);
+    setPill('pill-backend', s.fft.backend === 'dsp' ? 'DSP FFT · snapshots' : 'CPU FFT', s.fft.backend === 'dsp' ? 'good' : '');
     if (pendingLo !== null && r && (Math.abs(r.lo - pendingLo) < 1000 || performance.now() - pendingLoAt > 8000))
         pendingLo = null;
     showFrequency();
@@ -721,6 +722,7 @@ function onStatus(m) {
 
     if (!link.replaced) showMessage(s.state === 'waiting' ? s.message : '');
 
+    $('panel-receiver').hidden = s.fft.backend === 'dsp';
     showReceiver(s);
     showFft(s);
     showStream(s);
@@ -791,9 +793,23 @@ function showStream(s) {
                 (sp.retuned ? `; ${sp.retuned.toLocaleString('en-US')} frames dropped at retunes` : '')],
         ]);
     }
+    if (s.dsp) {
+        $('ring-mini-text').textContent = 'IQ stays on radio';
+        $('ring-mini').style.width = '0';
+        setPill('pill-errors', 'snapshot input', '');
+        setStats('ring-stats', [['Raw IQ ring', 'not used by this viewer']]);
+        setStats('rate-stats', [
+            ['FFT backend', 'DSP0 · 2048 points'],
+            ['DMA to DSP', `${s.dsp.dma_us.toFixed(1)} µs`],
+            ['Window + FFT + power', `${s.dsp.fft_us.toFixed(1)} µs`],
+            ['Spectra', `${sp.fps.toFixed(1)} /s`],
+            ['Sample coverage', `${(100 * sp.coverage).toFixed(3)} % (snapshots)`],
+            ['CPU FFT workers', String(sp.workers)],
+        ]);
+    }
     const c = s.controller;
     setStats('devices', [
-        ['Stream', `UDP ${s.devices.source}`],
+        ['Source', s.dsp ? s.devices.source : `UDP ${s.devices.source}`],
         ['Control', s.devices.controller ?? 'none (passive viewer)'],
         ...(c && c.mode === 'managed' ? [['Controller', c.alive ? `running, pid ${c.pid}` : 'not running'],
                                          ['Restarts', String(c.restarts)]] : []),
@@ -1172,7 +1188,7 @@ function enableControls() {
         $('configure').disabled = !changed;
         $('configure').classList.toggle('changed', changed);
     }
-    for (const e of $('panel-fft').querySelectorAll('input, button, select')) e.disabled = !live;
+    for (const e of $('panel-fft').querySelectorAll('input, button, select')) e.disabled = !live || status?.fft?.backend === 'dsp';
     $('run').disabled = !idle;
     frequency.classList.toggle('locked', !(idle && rf));
 }
@@ -1251,7 +1267,7 @@ function showFft(s) {
     showValue($('fft-dc'), f.dc);
     const rate = s.receiver ? s.receiver.sample_rate : 80e6, bin = rate / f.size;
     const rbw = bin * (windows.find((w) => w.name === f.window)?.bandwidth || 1);
-    $('fft-note').textContent = `Bins ${(bin / 1e3).toFixed(2)} kHz apart, resolution bandwidth ${(rbw / 1e3).toFixed(2)} kHz. ` +
+    $('fft-note').textContent = (f.backend === 'dsp' ? 'DSP · direct DMA · snapshot preview. Hann + DC removal; no CPU FFT. ' : '') + `Bins ${(bin / 1e3).toFixed(2)} kHz apart, resolution bandwidth ${(rbw / 1e3).toFixed(2)} kHz. ` +
         `${s.spectrum.fps.toFixed(1)} frames/s from ${(100 * s.spectrum.coverage).toFixed(s.spectrum.coverage < 0.1 ? 2 : 0)} % of the samples` +
         (s.spectrum.pairs_dropped > 0 ? `; ${(s.spectrum.pairs_dropped / 1e6).toFixed(1)} Msps skipped (busy).` : '.');
 }

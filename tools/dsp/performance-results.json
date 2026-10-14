@@ -1,0 +1,101 @@
+{
+  "date": "2026-10-14",
+  "hardware": "W1700K2 / MT7996 DSP0",
+  "clock_hz_assumed": 640000000,
+  "workload": "2048 packed signed-14-bit complex samples; DC removal, periodic Hann, FFT and normalized power; transport excluded",
+  "baseline_spectrum_us": 606.396875,
+  "selected_spectrum_us": 327.5828125,
+  "speedup": 1.8511254310694338,
+  "time_reduction_percent": 45.97880925755101,
+  "selected_cycles": [
+    209685,
+    209659,
+    209647,
+    209653,
+    209647,
+    209653,
+    209647,
+    209653,
+    209647,
+    209653
+  ],
+  "same_input_comparison": {
+    "float": {
+      "median_us": 327.5828125,
+      "relative_power_l2_error": 1.2778263003273434e-07,
+      "max_absolute_power_error": 1.1394961391751303e-13
+    },
+    "custom_mac_fixed": {
+      "median_us": 419.2546875,
+      "relative_power_l2_error": 0.02715088877793852,
+      "max_absolute_power_error": 1.829115686006317e-08
+    }
+  },
+  "fresh_capture_validation": {
+    "all_bins": 2048,
+    "relative_power_l2_error": 1.255962072659739e-07,
+    "dsp_us": 327.60625,
+    "dma_us": 8.7,
+    "passed": true
+  },
+  "mac_check": {
+    "passed": true,
+    "cases": 8,
+    "cycles": 92
+  },
+  "synthetic_fft": [
+    {
+      "event": "fft",
+      "n": 512,
+      "cycles": 36440,
+      "max_error": 1.190953569665629e-05,
+      "compute_us_at_640mhz": 56.9375,
+      "transfer_included": false
+    },
+    {
+      "event": "fft",
+      "n": 1024,
+      "cycles": 80992,
+      "max_error": 2.1941721581085714e-05,
+      "compute_us_at_640mhz": 126.55,
+      "transfer_included": false
+    },
+    {
+      "event": "fft",
+      "n": 2048,
+      "cycles": 168653,
+      "max_error": 6.864471240063943e-05,
+      "compute_us_at_640mhz": 263.5203125,
+      "transfer_included": false
+    },
+    {
+      "event": "fft",
+      "n": 4096,
+      "cycles": 369787,
+      "max_error": 0.0001411254991701664,
+      "compute_us_at_640mhz": 577.7921875,
+      "transfer_included": false
+    }
+  ],
+  "native_tests_passed": 13,
+  "active_instruction_path": "Scalar RV32 integer and single-precision floating point with FMA. No vector instructions. Custom MAC experiment only through op 6.",
+  "fixed_experiment": "Q15 twiddles, four fractional input bits, normalization and rounding at every stage; slower and weaker-signal precision loss; not selected for viewer.",
+  "limits": [
+    "DSP0 only; fixed 2048-point snapshots.",
+    "Approximately 19.2 fps; control and power-result transport dominate, so compute speedup is not a frame-rate gain.",
+    "No continuous all-sample processing or standard vector support established.",
+    "Volatile RAM deployment; no flash changes."
+  ],
+  "sha256": {
+    "tools/dsp/fft.c": "11a456c33ecbf4cb6be014734940c38dd778dd8064a5a06521376068e23837f1",
+    "tools/dsp/butterfly.h": "c53e15f5efa0d558045f0f61e1a8f573f84eb8e46be99687c157a935976eef87",
+    "tools/dsp/spectrum.c": "13c9b6d6e6b47b9048c146b3485f83dc2582070e0255f02d50c084cf4fa8b036",
+    "tools/dsp/mac.h": "495a0cf193d6b2991f73a65fd43df26c836c6de149c273734b83b8b34582d7ec",
+    "tools/dsp/mac.c": "55347c11b0fc22e684ac52816ba8f936c8d3adfd1d5eb96d7976580a1326dbb6",
+    "tools/dsp/fixed.c": "20b9f3e1fdebb6da76c786bb7bcc05aaf986835121bc7fb898e2afae0b7fa231",
+    "tools/dsp/main.c": "b8b138aac2e97572b352873cac6f4fd596e447a20515fd8cbad95876a3e74e14",
+    "tools/dsp/build.py": "42c97e4b57a1e8d28ab3b2d652b056336539614ef76137f7954eac3fd2d0c215",
+    "tools/dsp/build/dsp.bin": "aab69b96dbe30dd912e9aeee8b9522edaac6654248368241acb8084857640ad0",
+    "tools/dsp/build/w1700k_dsp_test.bin": "1ccb198a6cca4f89c5ad728da7e0bf8f29ae71daa0993d9640673238db479d7a"
+  }
+}

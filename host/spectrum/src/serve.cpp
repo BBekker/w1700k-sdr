@@ -156,7 +156,7 @@ public:
                           while (frames_.size() > 64) frames_.pop_front();
                       }
                       web_.wake();
-                  }),
+                  }, options.dsp_input),
           tuning_{options.center_hz, options.sample_rate}
     {
         options.fft.validate();
@@ -527,7 +527,7 @@ private:
 
     void on_tick()
     {
-        stream_.refresh();
+        if (options_.dsp_input.empty()) stream_.refresh();
         if (controller_) controller_->poll();
         if (dump_requested.exchange(false)) {
             if (dumping_) {
@@ -815,16 +815,18 @@ private:
             mark_spectrum_ = spectrum;
             mark_in_ = in;
         }
-        const bool live = in.last_any && steady_s() - in.last_any < 1;
+        const bool dsp = !options_.dsp_input.empty();
+        const bool live = dsp ? spectrum.last_frame && steady_s()-spectrum.last_frame<1
+                              : in.last_any && steady_s() - in.last_any < 1;
         const double run_seconds = in.run ? in.last_any - in.run_started : 0;
         const Tuning tuning = engine_.tuning();
 
         std::vector<std::pair<std::string, std::string>> sections = {
             {"state", json_quote(live ? "running" : "waiting")},
-            {"message", json_quote(live ? "" : waiting_message())},
+            {"message", json_quote(live ? "" : dsp ? "Waiting for DSP spectrum frames." : waiting_message())},
             {"running", live ? "true" : "false"},
             {"time", json_number(wall_ms())},
-            {"devices", "{\"source\":" + json_quote(stream_.name()) +
+            {"devices", "{\"source\":" + json_quote(dsp ? "DSP · DMA snapshots" : stream_.name()) +
                             ",\"controller\":" + (controller_ ? json_quote(options_.controller) : "null") + "}"},
             {"receiver", "{\"lo\":" + json_number(tuning.center_hz) + ",\"sample_rate\":" +
                              json_number(tuning.sample_rate) + ",\"flatten\":" +
@@ -838,18 +840,24 @@ private:
             sections.push_back({name, s});
             s.clear();
         };
-        s += "{\"size\":" + std::to_string(fft.size) + ",\"window\":" + json_quote(fft.window) +
+        s += "{\"backend\":" + json_quote(dsp ? "dsp" : "cpu") + ",\"size\":" + std::to_string(fft.size) + ",\"window\":" + json_quote(fft.window) +
              ",\"rate\":" + json_number(fft.rate) + ",\"averaging\":" + std::to_string(fft.averaging) +
              ",\"peak\":" + (fft.peak ? "true" : "false") + ",\"dc\":" + (fft.remove_dc ? "true" : "false") + "}";
         section("fft");
         s += "{\"fps\":" + json_number(std::round(spectrum_fps_ * 10) / 10) +
              ",\"pairs_used\":" + json_number(std::round(spectrum_used_)) +
              ",\"pairs_dropped\":" + json_number(std::round(spectrum_dropped_)) +
-             ",\"coverage\":" + json_number(sample_rate_ > 0 ? std::min(1.0, spectrum_used_ / sample_rate_) : 0) +
+             ",\"coverage\":" + json_number(dsp ? spectrum_used_ / tuning.sample_rate : sample_rate_ > 0 ? std::min(1.0, spectrum_used_ / sample_rate_) : 0) +
              ",\"workers\":" + std::to_string(spectrum.workers) + ",\"queued\":" + std::to_string(spectrum.queued) +
              ",\"backlog\":" + std::to_string(spectrum.backlog) + ",\"missing\":" + std::to_string(spectrum.pairs_missing) +
              ",\"retuned\":" + std::to_string(spectrum.frames_retuned) + "}";
         section("spectrum");
+        if (dsp) {
+            sections.push_back({"dsp", "{\"core_mask\":" + std::to_string(spectrum.dsp_core_mask) + ",\"points\":2048,\"continuous\":false,\"fft_us\":" +
+                json_number(spectrum.dsp_cycles/640.0) + ",\"dma_us\":" + json_number(spectrum.dma_cycles/720.0) + "}"});
+            sections.push_back({"stream", "null"});
+            return sections;
+        }
         s += "{\"run\":" + std::to_string(in.run) + ",\"seconds\":" + json_number(run_seconds) +
              ",\"datagrams\":" + std::to_string(in.datagrams) + ",\"bytes\":" + std::to_string(in.bytes) +
              ",\"slices\":" + std::to_string(in.slices) + ",\"packed\":" + std::to_string(in.packed) +
@@ -908,8 +916,8 @@ int command_serve(const ServeOptions &options)
 {
     std::signal(SIGPIPE, SIG_IGN);  // a controller that exits closes the pipe we write
     Service service(options);
-    std::fprintf(stderr, "serving on http://%s/, stream from w1700k-stream %s, controller %s  (Ctrl-C to stop)\n",
-                 service.address().c_str(), options.stream.c_str(),
+    std::fprintf(stderr, "serving on http://%s/, source %s, controller %s  (Ctrl-C to stop)\n",
+                 service.address().c_str(), (options.dsp_input.empty() ? options.stream : "DSP0 MEM_DMA snapshots").c_str(),
                  options.controller.empty() ? "off" : ("`" + options.controller + "`").c_str());
     stop_requested = false;
     std::signal(SIGINT, on_signal);

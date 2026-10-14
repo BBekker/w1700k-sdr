@@ -42,7 +42,7 @@ class DspFftTest(unittest.TestCase):
         return [complex(data[2*k], data[2*k+1]) for k in range(n)]
 
     def test_impulse_and_dc_all_sizes(self):
-        for n in (2, 16, 256, 512, 1024, 2048, 4096):
+        for n in (2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096):
             with self.subTest(n=n):
                 impulse = self.transform([1+0j] + [0j]*(n-1))
                 self.assertTrue(all(z == 1 for z in impulse))
@@ -60,7 +60,7 @@ class DspFftTest(unittest.TestCase):
 
     def test_random_against_direct_dft(self):
         rng = random.Random(7996)
-        for n in (2, 16, 128, 512, 4096):
+        for n in (2, 4, 8, 16, 32, 64, 128, 512, 2048, 4096):
             x = [complex(rng.uniform(-1, 1), rng.uniform(-1, 1)) for _ in range(n)]
             result = self.transform(x)
             bins = range(n) if n <= 128 else (0, 1, 3, 7, n//4, n//2, n//2+1, n-7, n-1)

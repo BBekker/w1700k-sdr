@@ -59,7 +59,7 @@ public:
     using Output = std::function<void(std::shared_ptr<const SpectrumFrame>)>;
 
     // output: called on a worker thread, in frame order.
-    SpectrumEngine(const StreamClient &stream, const Tuning &tuning, unsigned workers, Output output);
+    SpectrumEngine(const StreamClient &stream, const Tuning &tuning, unsigned workers, Output output, const std::string &dsp_input = "");
     ~SpectrumEngine();
     SpectrumEngine(const SpectrumEngine &) = delete;
     SpectrumEngine &operator=(const SpectrumEngine &) = delete;
@@ -89,6 +89,8 @@ public:
         uint64_t slices_skipped = 0;  // slices passed over while the scheduler was behind
         uint64_t backlog = 0;         // slices received and not yet reached by the frontier
         unsigned queued = 0, workers = 0;
+        double last_frame = 0;
+        uint32_t dsp_cycles = 0, dma_cycles = 0, dsp_core_mask = 1;
     };
     Stats stats() const;
 
@@ -111,6 +113,8 @@ private:
     };
 
     void schedule();
+    void read_dsp();
+    const std::string dsp_input_;
     void work(Worker &worker);
     void finish(uint64_t sequence, std::shared_ptr<SpectrumFrame> frame);
     std::shared_ptr<const Transform> transform(unsigned size, const std::string &window);

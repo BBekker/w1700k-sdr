@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
+#include <fstream>
 #include <stdexcept>
 
 #include <fftw3.h>
@@ -129,11 +131,21 @@ struct SpectrumEngine::Worker {
     }
 };
 
-SpectrumEngine::SpectrumEngine(const StreamClient &stream, const Tuning &tuning, unsigned workers, Output output)
-    : stream_(stream), output_(std::move(output))
+SpectrumEngine::SpectrumEngine(const StreamClient &stream, const Tuning &tuning, unsigned workers, Output output, const std::string &dsp_input)
+    : dsp_input_(dsp_input), stream_(stream), output_(std::move(output))
 {
     latest_.tuning = tuning;
     history_.push_back(latest_);
+    if (!dsp_input_.empty()) {
+        settings_.size = 2048;
+        settings_.window = "hann";
+        settings_.rate = 20;
+        settings_.averaging = 1;
+        settings_.peak = false;
+        settings_.remove_dc = true;
+        scheduler_ = std::thread([this] { read_dsp(); });
+        return;  // No FFTW planning, CPU FFT workers, or raw IQ ingestion.
+    }
     stats_.workers = std::max(1u, workers);
     transform(settings_.size, settings_.window);  // planned now, not while the stream runs past
     for (unsigned i = 0; i < stats_.workers; ++i) workers_.push_back(std::make_unique<Worker>());
@@ -155,6 +167,9 @@ SpectrumEngine::~SpectrumEngine()
 void SpectrumEngine::configure(const SpectrumSettings &settings)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!dsp_input_.empty() && (settings.size != 2048 || settings.window != "hann" ||
+        settings.rate != 20 || settings.averaging != 1 || settings.peak || !settings.remove_dc))
+        throw std::runtime_error("DSP0 preview uses 2048 points, Hann, DC removal and a 20 fps display");
     settings_ = settings;
     ++settings_version_;
 }
@@ -482,5 +497,64 @@ void SpectrumEngine::finish(uint64_t sequence, std::shared_ptr<SpectrumFrame> fr
         results_.erase(it);
         ++emit_next_;
         if (f) output_(std::move(f));
+    }
+}
+
+// Atomic latest-frame file produced by tools/dsp/live.py. Wire format is explicitly
+// little-endian: 56-byte header, then 2048 normalized linear-power float32 bins.
+void SpectrumEngine::read_dsp()
+{
+    uint64_t last_time = 0, last_index = 0;
+    for (;;) {
+        const auto next_display = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) return;
+        }
+        std::ifstream input(dsp_input_, std::ios::binary);
+        std::vector<unsigned char> bytes(56 + 2048 * 4);
+        if (input.read(reinterpret_cast<char *>(bytes.data()), bytes.size()) && input.peek() == EOF &&
+            (std::memcmp(bytes.data(), "DSPFFT1\0", 8) == 0 || std::memcmp(bytes.data(), "DSPFFT2\0", 8) == 0)) {
+            auto u32 = [&](size_t p) { uint32_t v=0; for(unsigned j=0;j<4;j++) v |= uint32_t(bytes[p+j]) << (8*j); return v; };
+            auto u64 = [&](size_t p) { return uint64_t(u32(p)) | (uint64_t(u32(p+4)) << 32); };
+            auto real = [&](size_t p) { uint64_t bits=u64(p); double v; std::memcpy(&v,&bits,8); return v; };
+            const uint64_t time = u64(48);
+            const double wall = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+            const double center = real(24), rate = real(32);
+            const uint32_t core_mask=bytes[6]=='2' ? u32(12) : 1;
+            if (u32(8)==2048 && (bytes[6]=='2' ? core_mask>0 && core_mask<=7 : u32(12)==1) && time!=last_time &&
+                wall - double(time)/1e9 >= -1 && wall - double(time)/1e9 < 1 &&
+                std::isfinite(center) && center>0 && rate==40e6) {
+                auto frame=std::make_shared<SpectrumFrame>();
+                frame->run=1; frame->index=u64(16); frame->blocks=1;
+                frame->center_hz=center; frame->sample_rate=rate; frame->db.resize(2048);
+                bool valid=true;
+                for(unsigned i=0;i<2048;i++) {
+                    uint32_t bits=u32(56+4*((i+1024)%2048)); float power;
+                    std::memcpy(&power,&bits,4);
+                    if(!std::isfinite(power) || power<0) { valid=false; break; }
+                    frame->db[i]=float(10*std::log10(double(power)+1e-20));
+                }
+                if(valid) {
+                    last_time=time;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        // The producer runs independently of display pacing. Its
+                        // sequence counts completed FFTs, including those between
+                        // displayed snapshots; it does not prove continuous IQ.
+                        const uint64_t blocks = last_index && frame->index > last_index
+                                                ? frame->index-last_index : 1;
+                        ++stats_.frames; stats_.blocks+=blocks; stats_.pairs_used+=2048*blocks;
+                        stats_.last_frame=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                        stats_.dsp_cycles=u32(40); stats_.dma_cycles=u32(44); stats_.dsp_core_mask=core_mask;
+                        latest_.tuning={center,rate};
+                    }
+                    last_index=frame->index;
+                    output_(frame);
+                }
+            }
+        }
+        // Presentation cadence must not sleep the DSP capture/processing loop.
+        std::this_thread::sleep_until(next_display);
     }
 }

@@ -21,9 +21,9 @@ def main():
     flags = ['--target=riscv32', '-march=rv32imaf_zicsr_zifencei', '-mabi=ilp32f',
              '-O3', '-ffreestanding', '-fno-builtin', '-nostdlib', '-mno-relax',
              '-msmall-data-limit=0', '-fno-pic', '-fno-unwind-tables',
-             '-ffp-contract=fast', '-Wall', '-Wextra', '-Werror']
+             '-ffp-contract=fast', '-DDSP_MRV5', '-Wall', '-Wextra', '-Werror']
     objects = []
-    for source in ('start.S', 'main.c', 'fft.c'):
+    for source in ('start.S', 'main.c', 'fft.c', 'spectrum.c', 'mac.c', 'fixed.c'):
         obj = args.out / (source + '.o')
         subprocess.run([tools['clang'], *flags, '-c', str(HERE / source), '-o', str(obj)], check=True)
         objects.append(str(obj))
@@ -41,16 +41,21 @@ SECTIONS {
     elf, raw = args.out / 'dsp.elf', args.out / 'dsp.bin'
     subprocess.run([tools['ld.lld'], '-T', str(script), '--no-relax', '-o', str(elf), *objects], check=True)
     subprocess.run([tools['llvm-objcopy'], '-O', 'binary', '-j', '.text', str(elf), str(raw)], check=True)
-    for stem, entry in (('wm-copy', 'copy_window'), ('wm-dma', 'dma_trial')):
+    for stem, entry in (('wm-copy', 'copy_window'), ('wm-dma', 'dma_trial'), ('wm-live', 'spectrum_capture'),
+                        ('wm-continuous', 'continuous_capture'), ('wm-output', 'output_trial'), ('wm-pipeline', 'pipeline')):
         wm_obj, wm_elf, wm_raw = (args.out / name for name in (stem+'.o', stem+'.elf', stem+'.bin'))
         subprocess.run([tools['clang'], '--target=riscv32', '-march=rv32im_zicsr_zifencei',
                         '-mabi=ilp32', '-O2', '-ffreestanding', '-fno-builtin', '-nostdlib',
                         '-mno-relax', '-msmall-data-limit=0', '-fno-pic', '-Wall', '-Wextra', '-Werror',
                         '-c', str(HERE/(stem+'.c')), '-o', str(wm_obj)], check=True)
-        subprocess.run([tools['ld.lld'], '-Ttext=0x00910000', '-e', entry, '--no-relax',
+        live_script = args.out / 'wm-live.ld'
+        if stem in ('wm-live', 'wm-continuous', 'wm-output', 'wm-pipeline'):
+            live_script.write_text('SECTIONS { . = 0x00912000; .text : { *(.text.entry.pipeline) *(.text.entry) *(.text .text.*) *(.rodata .rodata.*) } /DISCARD/ : { *(.comment) *(.riscv.attributes) } }')
+        placement = ['-T', str(live_script)] if stem in ('wm-live', 'wm-continuous', 'wm-output', 'wm-pipeline') else ['-Ttext=0x00910000']
+        subprocess.run([tools['ld.lld'], *placement, '-e', entry, '--no-relax',
                         '-o', str(wm_elf), str(wm_obj)], check=True)
         subprocess.run([tools['llvm-objcopy'], '-O', 'binary', '-j', '.text', str(wm_elf), str(wm_raw)], check=True)
-        assert 0 < wm_raw.stat().st_size <= 2048
+        assert 0 < wm_raw.stat().st_size <= (0x4000 if stem in ('wm-live', 'wm-continuous', 'wm-output', 'wm-pipeline') else 2048)
     sys.path.insert(0, str(HERE.parents[1] / 'firmware'))
     import container
     regions = []

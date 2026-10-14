@@ -510,7 +510,17 @@ class SpectrumServerTest(unittest.TestCase):
         self.assertEqual(ws.status["stream"]["lost"], 0)
         self.assertEqual(ws.status["stream"]["bad"], 0)
 
-        # SIGUSR1: a snapshot labelled with the current tuning.
+        # SIGUSR1 needs a complete snapshot in the new run, beyond tuning's
+        # settling margin. Receiving the first FFT does not guarantee this.
+        ring = stream_shm.Shm(s.stream_name)
+        try:
+            deadline = time.monotonic() + 10
+            required = int(0.01 * 320e6 / SLICE_SAMPLES) + 2048
+            while ring.position()[1] < required and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertGreaterEqual(ring.position()[1], required)
+        finally:
+            ring.close()
         s.process.send_signal(signal.SIGUSR1)
         deadline = time.monotonic() + 10
         while not glob.glob(os.path.join(s.dir, "w1700k-dump-*.json")) and time.monotonic() < deadline:

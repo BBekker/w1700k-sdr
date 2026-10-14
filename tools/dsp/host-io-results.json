@@ -1,0 +1,182 @@
+{
+  "date": "2026-10-14",
+  "hardware": "W1700K2 / MT7996 / router-local Python producer",
+  "workload": "2048-point DSP0 snapshot FFT, 40 Msps, same float arithmetic; no CPU FFT",
+  "baseline": {
+    "measured_frames": 280,
+    "warmup_frames_discarded": 20,
+    "fps": 19.370561196104084,
+    "timings": {
+      "capture_call_ms": {
+        "mean": 4.282716857158318,
+        "median": 4.290639999908308,
+        "p95": 4.3162399997527245,
+        "percent": 8.295862896717175
+      },
+      "health_and_traps_ms": {
+        "mean": 0.8122957143119233,
+        "median": 0.8115999999063206,
+        "p95": 0.828160000310163,
+        "percent": 1.5734623843412188
+      },
+      "dsp_status_read_ms": {
+        "mean": 3.1759229999969256,
+        "median": 3.177980000145908,
+        "p95": 3.2220800003415206,
+        "percent": 6.151941082555491
+      },
+      "dma_status_read_ms": {
+        "mean": 2.9206617142368225,
+        "median": 2.919300000030489,
+        "p95": 2.9470399995261687,
+        "percent": 5.657485646874263
+      },
+      "power_read_ms": {
+        "mean": 10.14008085714977,
+        "median": 10.132139999768697,
+        "p95": 10.210639999968407,
+        "percent": 19.641905677686314
+      },
+      "validate_and_publish_ms": {
+        "mean": 2.8650425714593957,
+        "median": 2.8611600000658655,
+        "p95": 2.9018799996265443,
+        "percent": 5.549748245989763
+      },
+      "logging_ms": {
+        "mean": 0.2210297142970116,
+        "median": 0.2179200000682613,
+        "p95": 0.22231999992072815,
+        "percent": 0.4281469606947665
+      },
+      "requested_sleep_ms": {
+        "mean": 25.576109428542235,
+        "median": 25.588959999640796,
+        "p95": 25.637040000037818
+      },
+      "pacing_sleep_ms": {
+        "mean": 27.19413557145864,
+        "median": 27.20820000013191,
+        "p95": 27.255119999608723,
+        "percent": 52.676566726209046
+      },
+      "frame_ms": {
+        "mean": 51.62473042862205,
+        "median": 51.62875999985772,
+        "p95": 51.63743999946746
+      },
+      "dsp_us": {
+        "mean": 327.578125,
+        "median": 327.578125,
+        "p95": 327.5828125
+      },
+      "dma_us": {
+        "mean": 8.67375,
+        "median": 8.672222222222222,
+        "p95": 8.680555555555555
+      },
+      "parent_cpu_ms": {
+        "mean": 19.510643857142906,
+        "median": 19.522640000000813,
+        "p95": 19.589239999998398
+      },
+      "helper_cpu_ms": {
+        "mean": 0.0,
+        "median": 0.0,
+        "p95": 0.0
+      }
+    },
+    "scope": "Producer wall time; hardware DSP/DMA timings are subsets of capture_call_ms, not additive. Browser transport/rendering is outside this measurement.",
+    "notes": [
+      "280 measured frames after discarding 20 warmup frames. Profiling temporarily added per-frame timing/logging; normal producer was restored.",
+      "Pacing is requested at 20 fps; measured sleep includes scheduler overshoot.",
+      "Parent CPU time excludes the persistent control helper, kernel workers and web viewer. RUSAGE_CHILDREN does not account for a still-running helper; its zero must not be interpreted as zero helper CPU.",
+      "Browser transport/rendering and viewer polling are not decomposed. DSP and DMA durations are nested within capture_call_ms."
+    ]
+  },
+  "optimized": {
+    "measured_frames": 980,
+    "warmup_frames_discarded": 20,
+    "fps": 237.10409459205283,
+    "timings": {
+      "capture_call_ms": {
+        "mean": 0.9365775918291659,
+        "median": 0.9209599998030171,
+        "p95": 0.9978400003092247
+      },
+      "metadata_read_ms": {
+        "mean": 0.062466204081476684,
+        "median": 0.061720000303466804,
+        "p95": 0.06475999998656334
+      },
+      "power_read_ms": {
+        "mean": 2.6098740816367503,
+        "median": 2.6135200000680925,
+        "p95": 2.6426399999763817
+      },
+      "publish_ms": {
+        "mean": 0.3881437959293811,
+        "median": 0.38451999989774777,
+        "p95": 0.42331999975431245
+      },
+      "logging_ms": {
+        "mean": 0.20930179590898346,
+        "median": 0.20700000004580943,
+        "p95": 0.23567999960505404
+      },
+      "pacing_sleep_ms": {
+        "mean": 0.005315632639320363,
+        "median": 0.0052400000640773214,
+        "p95": 0.006119999852671754
+      },
+      "frame_ms": {
+        "mean": 4.217556857128682,
+        "median": 4.202560000521771,
+        "p95": 4.291160000320815
+      },
+      "parent_cpu_ms": {
+        "mean": 4.190272571428605,
+        "median": 4.200820000000327,
+        "p95": 4.281159999999673
+      },
+      "dsp_us": {
+        "mean": 327.578125,
+        "median": 327.578125,
+        "p95": 327.5828125
+      },
+      "dma_us": {
+        "mean": 8.853398526077097,
+        "median": 8.858333333333333,
+        "p95": 8.859722222222222
+      }
+    }
+  },
+  "loop_speedup": 12.240434966837231,
+  "changes": [
+    "No default producer pacing; display cadence is independent",
+    "READ_MEM in two 4096-byte reads instead of 32 CTL reads that reselect the PCIe window for every word",
+    "WM publishes DSP/DMA timing in a 16-byte direct-readable record",
+    "Direct binary command/completion polling replaces JSON/interpreter round trips",
+    "Power validity checked while WM copies results; viewer retains its independent validation"
+  ],
+  "validation": {
+    "all_bins": 2048,
+    "relative_power_l2_error": 1.2156200826222246e-07,
+    "max_absolute_error": 1.1554057800876978e-13,
+    "passed": true
+  },
+  "limits": [
+    "Snapshot capture still stops between blocks; this does not prove continuous lossless processing.",
+    "Profile excludes browser rendering, setup and shutdown; no live web viewer during the timed run.",
+    "Hardware DSP/DMA times are contained in capture_call_ms, not additional.",
+    "Unpaced producer uses roughly one application CPU core in this profile; CPU milliseconds per FFT fell, but total producer CPU utilization rises.",
+    "Native tests: 17 passed before the display-cadence adjustment; viewer regressions rerun after it."
+  ],
+  "hashes": {
+    "tools/dsp/live.py": "60a46aa90b0caa1b29455cdfc1c75dfa3eb161245312a6e800847258fbf616fa",
+    "tools/dsp/wm-live.c": "2c86b2be423c61969684e2a75cf12ff8e9d4da91de26b6389ae3dbe0e028588d",
+    "tools/dsp/build/dsp.bin": "aab69b96dbe30dd912e9aeee8b9522edaac6654248368241acb8084857640ad0",
+    "tools/dsp/build/wm-live.bin": "c2d7210d4c6861621ce266160037ed969df6e791f71a6266e385852e3ad9b4b2",
+    "tools/dsp/build/live-fast-profile.py": "8e7c84ace402f27dcd38cbdab82cb32c4194f10fce866ee1a4dc100ed9bbc768"
+  }
+}

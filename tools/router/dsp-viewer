@@ -1,0 +1,64 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Volatile DSP DMA preview; package assembled under /work/dsp-live (see DSP README).
+set -eu
+base=${DSP_VIEWER_DIR:-/work/dsp-live}
+export PYTHONHOME=/opt/w1700k PYTHONPATH=/opt/w1700k/host PYTHONDONTWRITEBYTECODE=1
+python=/opt/w1700k/bin/python3
+stop_dsp() {
+    for name in viewer producer; do
+        file="$base/$name.pid"
+        if [ -r "$file" ]; then
+            pid=$(cat "$file")
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -TERM "$pid"
+                n=0
+                while kill -0 "$pid" 2>/dev/null; do
+                    [ "$n" -lt 15 ] || { echo "$name did not stop; refusing to reload" >&2; exit 1; }
+                    sleep 1; n=$((n+1))
+                done
+            fi
+            rm -f "$file"
+        fi
+    done
+}
+case "${1:-status}" in
+start|snapshot)
+    stop_dsp
+    /etc/init.d/S90spectrum stop
+    # The CPU service cleans up asynchronously. Do not race its open device.
+    n=0
+    while [ -e /run/w1700k-viewer.pid ] || pidof w1700k-stream >/dev/null || pidof mt7996-stream >/dev/null; do
+        [ "$n" -lt 30 ] || { echo 'CPU viewer has not stopped' >&2; exit 1; }
+        sleep 1; n=$((n+1))
+    done
+    "$python" "$base/load.py" --config /opt/w1700k/config.json --container "$base/w1700k_dsp_test.bin"
+    /opt/w1700k/bin/w1700k band 0 --rate 40 --lo 2440M
+    if [ "$1" = snapshot ]; then
+        setsid "$python" "$base/live.py" --config /opt/w1700k/config.json --helper "$base/wm-live.bin" \
+            --output "$base/spectrum.frame" </dev/null >"$base/live.log" 2>&1 &
+    else
+        setsid "$python" "$base/pipeline.py" --config /opt/w1700k/config.json --helper "$base/wm-pipeline.bin" \
+            --reader "$base/dsp-dma-reader" --output "$base/spectrum.frame" \
+            </dev/null >"$base/live.log" 2>&1 &
+    fi
+    echo $! >"$base/producer.pid"
+    setsid "$base/w1700k-spectrum" --dsp-input "$base/spectrum.frame" --web "$base/web" \
+        --listen 0.0.0.0:8073 --center 2440 --rate 40 </dev/null >"$base/viewer.log" 2>&1 &
+    echo $! >"$base/viewer.pid"
+    ;;
+stop) stop_dsp ;;
+cpu)
+    stop_dsp
+    /opt/w1700k/bin/w1700k load --band 0
+    /etc/init.d/S90spectrum start
+    ;;
+status)
+    for name in producer viewer; do
+        if [ -r "$base/$name.pid" ] && kill -0 "$(cat "$base/$name.pid")" 2>/dev/null; then
+            echo "$name running"
+        else echo "$name stopped"; fi
+    done
+    ;;
+*) echo 'usage: dsp-viewer start|snapshot|stop|cpu|status' >&2; exit 2 ;;
+esac

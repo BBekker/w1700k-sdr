@@ -17,6 +17,7 @@ void usage()
                  "  --listen ADDR:PORT  the web page (default 127.0.0.1:8073)\n"
                  "  --web DIR           serve the page from DIR instead of the built-in copy\n"
                  "  --stream NAME       w1700k-stream's shared memory (default /w1700k-stream)\n"
+                 "  --dsp-input PATH    DSP0 spectrum file (experimental, passive viewer)\n"
                  "  --fft-threads N     FFT workers (default 4)\n"
                  "  --fft-size N        initial FFT points (default 262144)\n"
                  "  --fft-rate N        initial spectra per second (default 100)\n"
@@ -72,6 +73,7 @@ int main(int argc, char **argv)
             if (arg == "--listen") o.listen = value();
             else if (arg == "--web") o.web_dir = value();
             else if (arg == "--stream") o.stream = value();
+            else if (arg == "--dsp-input") o.dsp_input = value();
             else if (arg == "--fft-threads") o.fft_threads = positive(arg, value());
             else if (arg == "--fft-size") o.fft.size = positive(arg, value());
             else if (arg == "--fft-rate") o.fft.rate = number(arg, value());
@@ -90,6 +92,11 @@ int main(int argc, char **argv)
             }
         }
         if (o.controller.find_first_not_of(" \t") == std::string::npos) o.controller.clear();
+        if (!o.dsp_input.empty()) {
+            o.controller.clear();
+            o.fft.size=2048; o.fft.window="hann"; o.fft.rate=20;
+            o.fft.averaging=1; o.fft.peak=false; o.fft.remove_dc=true;
+        }
         o.fft.validate();
     } catch (const std::exception &e) {
         std::fprintf(stderr, "w1700k-spectrum: %s\n", e.what());
