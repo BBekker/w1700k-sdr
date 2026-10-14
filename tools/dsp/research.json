@@ -1,0 +1,89 @@
+{
+  "status": "MEM_DMA delivers received IQ directly to DSP0; one-shot FFT and repeated transfers validated. Continuous scheduling and viewer integration pending.",
+  "upstream_base": "0b0413e4309f0c083702fa4eb2d1c2bca4532163",
+  "question": "Can received IQ reach an MRV5 DSP without the measured 35 MB/s MCU copy?",
+  "evidence": [
+    {
+      "source": "include/hw/mt7996/dsp.h (existing upstream measurements)",
+      "finding": "Three 640 MHz RV32IMAF DSP cores, 64 KiB ITCM and 64 KiB DTCM each. MCU access to DTCM measured at 35 MB/s. Existing DSP loads did not expose shared RAM."
+    },
+    {
+      "source": "include/hw/mt7996/dfe.h (existing upstream measurements)",
+      "finding": "XCAP targets PHY-side DTCM addresses 0x80206000..0x80210000. In receive-only tests all four mode settings armed but neither completed nor wrote DTCM. The vendor uses this engine during transmitting calibration. This project does not enable a transmitter to test it."
+    },
+    {
+      "source": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main/mediatek/mt7996/mt7996_dsp.bin",
+      "sha256": "c2d9e048cc1ce29d472f5bb342445a41bdb2d11c5c904bc904a498ae60ece3f7",
+      "trailer_build_date": "20260311120415",
+      "finding": "Decrypted first code region offsets 0x2c..0xe8 configure five apparent memory regions; none includes 0x00464000, the SYSRAM capture window. A sixth-region hardware test suppressed access faults but returned zeros rather than known patterns in ULM1 and capture SYSRAM. No vendor binary is included in this contribution."
+    },
+    {
+      "source": "include/hw/mt7996/mcu_dma.h and https://lists.infradead.org/pipermail/linux-mediatek/2022-November/052515.html",
+      "finding": "MEM_DMA TX0 -> RX0 is now measured to move raw payload from ULM1, the stopped capture window, and the capture pool into DSP0 DTCM. Two-pattern content/guard tests and received-sample FFT checks pass; see dma-results.json."
+    }
+  ],
+  "prototype": {
+    "build": "python3 tools/dsp/build.py (clang, ld.lld and llvm-objcopy on PATH)",
+    "test": "python3 -m unittest discover -s tests -p test_dsp_fft.py -v",
+    "tests_passed": 3,
+    "validation": "Three native arithmetic tests pass. Hardware two-tone FFTs pass at N=512,1024,2048,4096. A received 2048-sample block copied inside the radio was unpacked and transformed on DSP0; all bins agree with independent direct DFT sums. See hardware-results.json. Follow-up: CPU copy replaced by MEM_DMA. Five received captures (one window, four pool) pass full independent DFT checks; repeated-buffer DMA reaches about 914 MB/s including queue control.",
+    "data_format": "interleaved float32 complex; forward FFT, no normalisation",
+    "maximum_fft_points": 4096,
+    "dtcm_layout": {
+      "mailbox": "0x200000..0x200fff",
+      "fft_data": "0x201000..0x208fff",
+      "twiddles": "0x209000..0x20cfff",
+      "raw_iq": "0x20d000..0x20efff (2048 words)",
+      "stack": "0x20f000..0x20ffff"
+    },
+    "mailbox_ops": {
+      "1": "FFT: caller supplies n, input and n/2 complex twiddles, increments request, waits for ack. cycles excludes transport.",
+      "2": "Read-only probe at allowed RAM address, first with stock windows then with a proposed sixth 4 KiB region. Record result, trap cause/PC/value and window-control readback; restore the three modified CSRs.",
+      "3": "Decode raw signed 14-bit I/Q at 0x20d000 to float and run FFT, n<=2048. cycles includes unpacking and FFT."
+    },
+    "commands": [
+      "See tools/dsp/README.md for host-side commands using the existing upstream SSH transport.",
+      "Hardware measurements were collected using router-local control; no router-local transport changes are required by these tools."
+    ],
+    "source_files": {
+      "load.py": "Normal volatile firmware loading and RX bring-up, with DSP readiness checks",
+      "run.py": "Synthetic FFT validation and optional guarded ULM1 access test",
+      "probe_capture.py": "Guarded known-pattern capture SYSRAM test",
+      "capture.py": "One-shot received IQ via WM copy or MEM_DMA, from the window or normal streaming pool",
+      "verify_capture.py": "Independent full direct DFT check of received results",
+      "wm-copy.c": "WM helper, 8192-byte raw IQ copy with cycle timing",
+      "hardware-results.json": "Measured results and limits",
+      "wm-dma.c": "Bounded radio-side DMA helper; no CPU payload loads/stores",
+      "memdma.py": "Known-pattern TX0 -> RX0 endpoint tests with guard checks",
+      "dma_bench.py": "Repeated transfer timing and content checks",
+      "dma-results.json": "DMA evidence, timings, independent received-data FFT checks and limits"
+    }
+  },
+  "local_hardware_attempt": {
+    "date": "2026-10-14",
+    "result": "inconclusive",
+    "detail": "A batched WM read-only register survey timed out. Subsequent host mailbox reads returned 0xdead2117, with PCIe completion timeouts. Firmware reload did not clear this documented fault. Because the original survey was batched, no individual DSP, DFE or MEM_DMA register is established as its cause. No DMA trial, DSP image execution, or RAM-window experiment occurred.",
+    "instrumentation_change": "registers.py requires a healthy WM and advancing heartbeat, refuses an active stream pump, flushes each address before reading it, stops at the first error, and does not retry invalid bus responses.",
+    "followup": {
+      "result": "bus fault reproduced before DSP code execution",
+      "core_enable_before": "0x0",
+      "core_reset_before": "0x0",
+      "sequence": "Set core-0 reset, set core-0 enable, attempt ITCM snapshot while reset remained asserted. First 128-word block at 0x86000000 timed out; subsequent WM status reads returned 0xdead2117.",
+      "conclusion": "Do not read TCM while reset is held. This is not evidence about FFT correctness or DSP access to shared RAM. Cold DSP initialization and reset-state accessibility remain unresolved.",
+      "next": "Use firmware-download engine to load a DSP container before WA completes boot; finish the reset pulse before checking DSP ready, with individual first-touch logs."
+    },
+    "successful_followup": "After physical power removal, normal PDA loading of our DSP container and normal RX bring-up left ENABLE=7, RESET=0; DSP0 reported our ready/tag and passed the tests in hardware-results.json. No manual DSP reset or direct TCM loading was needed."
+  },
+  "next_experiments": [
+    "Integrate completion-driven DMA scheduling with the live ICAP ring: select only completed blocks, prevent capture overwrite, and use separate DSP buffers while FFT runs.",
+    "Stress continuous capture plus MEM_DMA and host streaming together; measure dropped/overwritten input blocks, CPU control cost, output latency and correct frame boundaries.",
+    "Optimize the scalar FFT or distribute independent frames across DSP cores. DMA now exceeds the 160 MB/s input requirement, but current scalar FFT computation does not.",
+    "Provide an optional viewer backend with explicit FFT size and temporal coverage, after the continuous scheduling tests pass."
+  ],
+  "limits": [
+    "40 Msps raw complex samples require 160 MB/s. MEM_DMA benchmark exceeds this; the earlier MCU copy does not. Continuous stream scheduling is not yet validated.",
+    "A 4096-point complex float FFT uses 32 KiB for data and 16 KiB for twiddles. The current viewer's 32768-point transform needs a different memory strategy.",
+    "A displayed spectrum at 20 frames/s does not imply every 40 Msps sample is transformed.",
+    "The startup and memory-window probe were tested in RAM only; no DSP changes are installed in the persistent router image."
+  ]
+}

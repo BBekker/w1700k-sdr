@@ -19,9 +19,14 @@
  *    0x86c00000 + b * 0x100000; trigger/IRQ words at 0x8308xxxx + b * 0x100000.
  *    The host reaches these through REG_ACCESS (see mcu_dic.h).
  *
- * The DSPs are compute islands for LOAD/STORE: they cannot reach SYSRAM,
- * ULM, CRAM or the UMAC pool at any address (a 448-probe scan of every
- * 16 MiB base found no alias). Data reaches DTCM only by MCU copy (35 MB/s),
+ * The published LOAD/STORE probes could not reach SYSRAM, ULM, CRAM or the
+ * UMAC pool (a 448-probe scan of every 16 MiB base found no alias). The
+ * startup window configuration below leaves the low-address SYSRAM/ULM
+ * outside its listed regions. A sixth-region test suppressed load access
+ * faults at ULM1 0x00910000/+4 and SYSRAM 0x00464000/+4, but returned zero
+ * for two known nonzero patterns at both addresses (details below). It did
+ * not expose usable shared RAM. Known DTCM input paths are
+ * MEM_DMA TX0 -> RX0 (mcu_dma.h; ~0.9 GB/s into DSP0), MCU copy (35 MB/s),
  * the download engine, or the PHY-side DFE capture engine, which addresses
  * DTCM 0x206000..0x20ffff as 0x80206000..0x8020ffff (see the capture
  * headers; unproven as an RX input).
@@ -132,6 +137,17 @@
  *   ENABLE &= ~bit; RESET |= bit; ENABLE |= bit; RESET &= ~bit.
  * It restarts the core from ITCM with ITCM/DTCM contents (and any trigger
  * hook) intact, and recovers a faulted core. [measured]
+ * HAZARD: this is a complete restart pulse, not a proven memory-loading
+ * state. On the own-firmware cold path (ENABLE=RESET=0), asserting core-0
+ * reset, enabling core 0, then reading ITCM while reset remained asserted
+ * timed out and left host mailbox reads returning 0xdead2117 (2026-10-14).
+ * No DSP instructions ran and no TCM backup was obtained. Whether reset
+ * alone or another missing initialization caused it is unresolved. Do not
+ * use the intermediate reset-held state for TCM access.
+ * Cold path tested with our firmware (2026-10-14): download patch, WM,
+ * a six-region DSP container, WA, then normal RX bring-up. ENABLE reads 7,
+ * RESET 0 and our DSP0 image reports ready. No manual pulse is needed.
+ * Simply omitting the DSP container leaves ENABLE=0 on this path.
  */
 #define MT7996_DSP_CORE_ENABLE            0x81020010u
 #define MT7996_DSP_CORE_RESET             0x81020014u
@@ -161,6 +177,33 @@
 #define MT7996_DSP_CSR_WIN_FIRST          0x9c0u	/* ..0x9ff: memory windows/attributes */
 #define MT7996_DSP_CSR_WIN_LAST           0x9ffu
 #define MT7996_DSP_CSR_DTCM_BASE          0x9ddu	/* reads 0x00200000 */
+/* Public linux-firmware mediatek/mt7996/mt7996_dsp.bin, trailer date
+ * 20260311120415, SHA256 c2d9e048cc1ce29d472f5bb342445a41bdb2d11c5c904bc904a498ae60ece3f7.
+ * Decrypted core-0 startup offsets 0x2c..0xe8 initialise these CSRs.
+ * Register values are [static]; names and region semantics are [inferred].
+ * 0x9dc/0x9de = 0 / 0x10000; 0x9dd/0x9df = 0x200000 / 0x210000.
+ * For i = 0..4, 0x9e0+i / 0x9f0+i are:
+ *   0x000000c0 / 0x00010000     ITCM
+ *   0x002000c0 / 0x00210000     DTCM
+ *   0x400000c0 / 0x80000000
+ *   0x800002c0 / 0xc0000000
+ *   0xc00003c0 / 0xffffffff
+ * Then 0x9c0 = 0x1f, 0x7c0 = 0x37fc, fence.i.
+ * The low flag bits (0xc0, 0x2c0, 0x3c0) are not decoded. 0x9c0 may
+ * enable the five regions, but that has not been demonstrated on hardware.
+ * In particular, no region covers the SYSRAM capture window at 0x464000.
+ * Sixth-region test [measured, 2026-10-14]: set 0x9e5 to page | 0xc0,
+ * 0x9f5 to page + 0x1000, 0x9c0 to 0x3f; restore all three afterwards.
+ * At 0x00910000/+4 and 0x00464000/+4, stock windows give mcause=5.
+ * The sixth window suppresses the trap but returns zero for both pairs
+ * {0x13579bdf,0x2468ace0} and {0xcafebabe,0x31415926}, verified by WM
+ * readback. This is not evidence of a usable bus path. Only flags 0xc0
+ * were tested. tools/dsp/hardware-results.json records each response.
+ * Standalone DSP startup and scalar FFT are now hardware-verified.
+ */
+#define MT7996_DSP_CSR_WIN_CONTROL        0x9c0u
+#define MT7996_DSP_CSR_WIN_BASE(n)        (0x9e0u + (n))
+#define MT7996_DSP_CSR_WIN_END(n)         (0x9f0u + (n))
 #define MT7996_DSP_CSR_CNT_EN             0xbc0u	/* |= 0x1f starts the counters */
 #define   MT7996_DSP_CNT_EN_ALL           0x1fu
 #define MT7996_DSP_CSR_ID_A               0xfc1u	/* differs per core (0xe5cc / 0xe5d0) */
@@ -192,6 +235,19 @@
  *   DTCM copy 32-bit / 128-bit 3.55 / 6.39 B/cycle (2.3 / 4.1 GB/s);
  *   single-float FMA 1/cycle (1.28 GFLOPS); int32 mul 2/cycle;
  *   custom MAC 2/cycle with both accumulators (1.28 G MAC/s).
+ *
+ * Own-image scalar float FFT baseline (tools/dsp, 2026-10-14):
+ * N=4096: 628907 cycles (~983 us using the measured 640 MHz clock),
+ * transport excluded; two complex tones verified. One received N=2048
+ * block: WM copied 8192 raw bytes from the stopped capture window to
+ * DTCM in 253442 WM cycles (~352 us at 720 MHz, 23.27 MB/s), then the DSP
+ * unpacked signed 14-bit IQ and transformed it in 319424 DSP cycles
+ * (~499 us). All 2048 bins agree with direct DFT sums, relative L2 error
+ * 1.06e-7. This is a one-shot baseline, not continuous 40 Msps offload.
+ * Follow-up: MEM_DMA moves the same 8192-byte input without CPU copy in
+ * ~9.52 us from the window or ~8.71 us from the capture pool. Received
+ * samples and full DSP FFT outputs independently verified; see mcu_dma.h
+ * and tools/dsp/dma-results.json. FFT compute time remains ~499 us.
  *
  * HAZARD: a DSP load/store to ULM2 (0x02200000) or SYSRAM (0x00400000)
  * faults the core (PC 0x14e0); 0x10000000..0x3fffffff faults. Recover with

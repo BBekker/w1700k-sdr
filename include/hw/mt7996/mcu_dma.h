@@ -228,7 +228,7 @@
  */
 
 /* ========================================================================
- * MEM_DMA (engine 1) [static; never used for data on hardware]
+ * MEM_DMA (engine 1): local TX0 -> RX0 payload transfer
  * ======================================================================== */
 /* WM: engine-1 TX0 adapter 0x0222c928 (descriptors 0x0223fec0..0x0223ff40,
  * 8), RX1 adapter 0x0222c978 (descriptors 0x0223fcc0..0x0223fd40, 8). WA:
@@ -237,5 +237,47 @@
  * 0x2c0 (unresolved). */
 #define MT7996_MEM_DMA_WM_TX0_ADAPTER     0x0222c928u
 #define MT7996_MEM_DMA_WM_RX1_ADAPTER     0x0222c978u
+
+/* Own-firmware measurements, W1700K2 / MT7996, 2026-10-14:
+ * TX0 -> RX0 transfers raw payload entirely on the radio bus, including
+ * DSP0 DTCM as the RX buffer. No CPU payload copy and no host PCIe round
+ * trip. The MCU programs/recycles descriptors and polls completion.
+ *
+ * Tested sources: free ULM1 0x00912000; stopped ICAP window pages
+ * 0x00464000 and 0x00466000; stopped ICAP pool 0xe0400000.
+ * Tested destinations: free ULM1 0x00914000 (64 bytes), and DSP0 DTCM
+ * 0x8620d000..0x8620efff (64..8192 bytes). The DSP must be enabled and
+ * running: use its normal PDA container load, not reset-held TCM access.
+ *
+ * Setup used by tools/dsp/wm-dma.c:
+ * - Stop TX/RX (GLO_CFG &= ~5), require BUSY bits [3,1] clear and TX
+ *   CIDX == DIDX. Preserve the ROM prefetch allocations: TX0 0x00800002,
+ *   RX0 0x02200002. No other ring is repurposed.
+ * - Eight 16-byte TX descriptors at 0x00910800 and RX at 0x00910900.
+ *   TX {source, LS0 | len<<16, 0, 0}; RX {dest, capacity<<16, 0, 0}.
+ * - Program BASE/CNT/CIDX=0; reset DTX/DRX pointer bit 0; publish RX
+ *   CIDX=7. GLO_CFG was 0x18003075 (omit TX/RX info, 16-byte descriptors).
+ * - Enable TX/RX, fence, advance TX CIDX. Require BOTH matching TX/RX
+ *   DIDX and RX descriptor DDONE; check RX length. DIDX can become visible
+ *   before DDONE! Clearing RX ctrl then publishing RX CIDX=recycled slot
+ *   makes capacity available again. Keep one slot empty.
+ * - Drain before stopping; leave scratch reserved until a normal reload.
+ *   Never restore/free DMA buffers while the engine can still reach them.
+ *
+ * Known-pattern tests: 64-byte ULM1 -> ULM1 and -> DSP, two patterns,
+ * exact payload/length and guard checks. Timed ULM1 -> DSP: 128 transfers
+ * per size/pattern, sizes 64,256,1024,4096,8192, two patterns. At 8192:
+ * ~8.78 us/transfer (933 MB/s); ~914 MB/s including descriptor recycling
+ * and polling. Clock conversion uses WM's configured 720 MHz.
+ * Received IQ: two 4096-byte window transfers total 6856 cycles (~9.52 us),
+ * or one 8192-byte pool transfer 6274 cycles (~8.71 us). Both inputs match
+ * DTCM byte-for-byte and their DSP FFTs pass a full independent DFT check.
+ * Pool data is DMA-coherent; WM validation reads invalidate its source
+ * D-cache lines first. No CPU payload loads occur in the DMA helper.
+ *
+ * These are stopped-capture and repeated-buffer tests. Continuous capture
+ * scheduling, concurrent host DMA, all-band routing, DSP1/2 destinations,
+ * and end-to-end full-rate FFT processing are not yet validated.
+ */
 
 #endif /* HW_MT7996_MCU_DMA_H */
