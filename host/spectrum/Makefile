@@ -3,11 +3,12 @@
 # compiled into the binary; the stream comes from w1700k-stream (../stream). Tune for the build host
 # with CXXFLAGS="-O3 -march=native".
 CXX ?= c++
+include ../common/build.mk
 CXXFLAGS ?= -O3
 WARNINGS ?= -Wall -Wextra -Werror
 PREFIX ?= /usr/local
-override CXXFLAGS += -std=c++17 -pthread -I../stream/include $(WARNINGS)
-LDLIBS += -pthread -lz -lfftw3f -lrt
+override CXXFLAGS += -std=c++17 -pthread -I../stream/include $(FFTW_CFLAGS) $(WARNINGS)
+LDLIBS += -pthread -lz $(FFTW_LIBS) $(RT_LIBS)
 
 SOURCES := $(wildcard src/*.cpp)
 OBJECTS := $(patsubst src/%.cpp,build/%.o,$(SOURCES)) build/web_assets.o
@@ -18,7 +19,7 @@ all: build/w1700k-spectrum
 build/w1700k-spectrum: $(OBJECTS)
 	$(CXX) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
-build/%.o: src/%.cpp $(wildcard src/*.h) ../stream/include/w1700k_stream.h | build
+build/%.o: src/%.cpp $(wildcard src/*.h) ../stream/include/w1700k_stream.h $(wildcard ../common/*.h) | build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 build/web_assets.cpp: embed.sh $(wildcard web/*) | build

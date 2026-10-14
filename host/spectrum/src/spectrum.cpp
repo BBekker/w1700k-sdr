@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "spectrum.h"
+#include "../../common/fft.h"
 
 #include <algorithm>
 #include <chrono>
@@ -105,7 +106,7 @@ struct SpectrumEngine::Transform {
         // Measuring finds a faster plan; the time limit keeps a new size from stalling the
         // stream for long (FFTW remembers plans it has made).
         fftwf_set_timelimit(1.0);
-        plan = fftwf_plan_dft_1d(int(n), in, out, FFTW_FORWARD, FFTW_MEASURE);
+        plan = fftwf_plan_dft_1d(int(n), in, out, FFTW_FORWARD, w1700k_fft_plan_flags());
         fftwf_free(in);
         fftwf_free(out);
     }
@@ -114,15 +115,6 @@ struct SpectrumEngine::Transform {
         std::lock_guard<std::mutex> lock(planner);
         fftwf_destroy_plan(plan);
     }
-};
-
-struct SpectrumEngine::Job {
-    std::shared_ptr<const StreamView> view;  // the mapping the run lives in
-    uint64_t sequence = 0, run = 0, first = 0, stride = 0;
-    unsigned blocks = 0;
-    std::shared_ptr<const Transform> transform;
-    Tuning tuning;
-    bool peak = false, remove_dc = false;
 };
 
 struct SpectrumEngine::Worker {

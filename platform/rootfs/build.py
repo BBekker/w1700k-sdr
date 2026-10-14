@@ -141,6 +141,9 @@ def stage_overlay(files):
 def configure():
     """Generate the Buildroot defconfig and apply it when it changed."""
     source = fetch.buildroot()
+    if sys.platform == 'darwin':
+        fetch.openwrt()  # pinned native-host portability headers and MTD patch
+        run([sys.executable, ROOT / 'tools/macos/prepare-buildroot', source], log=LOG)
     seed = (UNIT / 'config.seed').read_text()
     seed += (f'BR2_ROOTFS_OVERLAY="{OVERLAY}"\n'
              f'BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="{UNIT / "busybox.fragment"}"\n'

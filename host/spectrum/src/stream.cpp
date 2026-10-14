@@ -26,7 +26,8 @@ void StreamClient::refresh()
         struct stat st;
         const int fd = shm_open(name_.c_str(), O_RDONLY, 0);
         if (fd < 0) return;
-        const bool same = fstat(fd, &st) == 0 && uint64_t(st.st_ino) == current->inode();
+        // Darwin's POSIX shared-memory objects all report inode zero.
+        const bool same = fstat(fd, &st) == 0 && st.st_ino != 0 && uint64_t(st.st_ino) == current->inode();
         close(fd);
         if (same) return;
     }
@@ -34,6 +35,10 @@ void StreamClient::refresh()
     uint64_t inode = 0;
     w1700k_stream_header *h = w1700k_stream_open(name_.c_str(), 1, &bytes, &inode);
     if (!h) return;
+    if (current && !w1700k_stream_alive(h)) {
+        munmap(h, bytes);
+        return;
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     view_ = std::make_shared<const StreamView>(h, bytes, inode, ++epoch_);
     write_control(h);

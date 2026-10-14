@@ -161,8 +161,16 @@ static inline struct w1700k_stream_header *w1700k_stream_open(const char *name, 
 	close(fd);
 	if (h == MAP_FAILED)
 		return NULL;
+	/* Darwin rounds POSIX shared-memory sizes up to the VM page size. */
+#ifdef __APPLE__
+	const uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE);
+	const int size_matches = h->total_bytes <= (uint64_t)st.st_size &&
+		(uint64_t)st.st_size - h->total_bytes < page;
+#else
+	const int size_matches = h->total_bytes == (uint64_t)st.st_size;
+#endif
 	if (h->magic != W1700K_STREAM_MAGIC || h->version != W1700K_STREAM_VERSION ||
-	    h->slice_samples != W1700K_STREAM_SLICE || h->total_bytes != (uint64_t)st.st_size) {
+	    h->slice_samples != W1700K_STREAM_SLICE || !size_matches) {
 		munmap(h, (size_t)st.st_size);
 		errno = EPROTO;
 		return NULL;

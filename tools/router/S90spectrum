@@ -1,0 +1,43 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Router-local viewer. All runtime state and logs stay in RAM.
+set -eu
+base=/opt/w1700k
+pidfile=/run/w1700k-viewer.pid
+export W1700K_FFTW_ESTIMATE=1
+case "${1:-start}" in
+start)
+    if [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then exit 0; fi
+    setsid "$0" run </dev/null >/work/viewer-service.log 2>&1 &
+    echo $! > "$pidfile"
+    ;;
+stop)
+    if [ -r "$pidfile" ]; then kill -TERM "$(cat "$pidfile")" 2>/dev/null || true; fi
+    ;;
+run)
+    stream_pid= viewer_pid=
+    cleanup() {
+        trap - EXIT INT TERM
+        [ -z "$viewer_pid" ] || kill -TERM "$viewer_pid" 2>/dev/null || true
+        "$base/bin/w1700k" stop >/work/viewer-stop.log 2>&1 || true
+        [ -z "$stream_pid" ] || kill -TERM "$stream_pid" 2>/dev/null || true
+        rm -f "$pidfile"
+    }
+    trap cleanup EXIT
+    trap 'exit 0' INT TERM
+    mkdir -p /dev/shm
+    grep -q ' /dev/shm tmpfs ' /proc/mounts || mount -t tmpfs -o size=80m,mode=1777 tmpfs /dev/shm
+    "$base/bin/w1700k" band 0 --rate 40 --lo 2440M
+    "$base/bin/w1700k" filter 40
+    "$base/bin/w1700k-stream" --device /dev/w1700k-sdr --receive-mib 32 --ring-mib 32 --workers 2 --report 30 >/work/router-stream.log 2>&1 &
+    stream_pid=$!
+    sleep 1
+    kill -0 "$stream_pid"
+    "$base/bin/w1700k" start
+    "$base/bin/w1700k-spectrum" --listen 0.0.0.0:8073 --controller "$base/bin/w1700k serve" --fft-threads 1 --fft-size 32768 --fft-rate 20 --fft-average 1 --rate 40 --center 2440 >/work/router-viewer.log 2>&1 &
+    viewer_pid=$!
+    while kill -0 "$stream_pid" 2>/dev/null && kill -0 "$viewer_pid" 2>/dev/null; do sleep 5; done
+    exit 1
+    ;;
+*) echo "usage: $0 start|stop|run" >&2; exit 2 ;;
+esac

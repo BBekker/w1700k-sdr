@@ -18,6 +18,9 @@ void usage()
                  "  --web DIR           serve the page from DIR instead of the built-in copy\n"
                  "  --stream NAME       w1700k-stream's shared memory (default /w1700k-stream)\n"
                  "  --fft-threads N     FFT workers (default 4)\n"
+                 "  --fft-size N        initial FFT points (default 262144)\n"
+                 "  --fft-rate N        initial spectra per second (default 100)\n"
+                 "  --fft-average N     FFT blocks per frame (default all samples)\n"
                  "  --controller CMD    the receiver's controller, run with sh -c (default \"w1700k serve\")\n"
                  "  --no-controller     a passive viewer: no receiver controls\n"
                  "  --center MHZ        the stream's centre frequency until the controller reports it (default 5250)\n"
@@ -70,6 +73,9 @@ int main(int argc, char **argv)
             else if (arg == "--web") o.web_dir = value();
             else if (arg == "--stream") o.stream = value();
             else if (arg == "--fft-threads") o.fft_threads = positive(arg, value());
+            else if (arg == "--fft-size") o.fft.size = positive(arg, value());
+            else if (arg == "--fft-rate") o.fft.rate = number(arg, value());
+            else if (arg == "--fft-average") o.fft.averaging = positive(arg, value());
             else if (arg == "--controller") o.controller = value();
             else if (arg == "--no-controller") o.controller.clear();
             else if (arg == "--center") o.center_hz = number(arg, value()) * 1e6;
@@ -84,6 +90,7 @@ int main(int argc, char **argv)
             }
         }
         if (o.controller.find_first_not_of(" \t") == std::string::npos) o.controller.clear();
+        o.fft.validate();
     } catch (const std::exception &e) {
         std::fprintf(stderr, "w1700k-spectrum: %s\n", e.what());
         usage();

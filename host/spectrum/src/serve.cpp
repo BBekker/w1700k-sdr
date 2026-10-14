@@ -159,6 +159,8 @@ public:
                   }),
           tuning_{options.center_hz, options.sample_rate}
     {
+        options.fft.validate();
+        engine_.configure(options.fft);
         if (!options.controller.empty())
             controller_ = std::make_unique<Controller>(
                 options.controller, [this] { web_.wake(); },

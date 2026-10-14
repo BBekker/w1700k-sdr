@@ -48,7 +48,7 @@ def build_problem():
     """Why the server cannot be built here, or None."""
     if not shutil.which("make") or not shutil.which(os.environ.get("CXX", "c++")):
         return "no make or C++ compiler"
-    probe = subprocess.run([os.environ.get("CXX", "c++"), "-x", "c++", "-fsyntax-only", "-"],
+    probe = subprocess.run([os.environ.get("CXX", "c++"), "-x", "c++", "-fsyntax-only", *stream_shm.fftw_flags(), "-"],
                            input="#include <fftw3.h>\n#include <zlib.h>\n", text=True, capture_output=True)
     if probe.returncode:
         return "FFTW3 or zlib headers missing"

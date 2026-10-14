@@ -9,6 +9,7 @@ import io
 import os
 import shlex
 import subprocess
+import sys
 import tarfile
 import tempfile
 from dataclasses import dataclass
@@ -40,7 +41,10 @@ def _control_dir():
     base = os.environ.get('XDG_RUNTIME_DIR')
     if base and Path(base).is_dir():
         return Path(base)
-    path = Path(tempfile.gettempdir()) / f'w1700k-{os.getuid()}'
+    # Darwin's long per-user temporary directory can exceed sockaddr_un's
+    # 104-byte path limit once OpenSSH expands its 40-character connection hash.
+    temporary = '/tmp' if sys.platform == 'darwin' else tempfile.gettempdir()
+    path = Path(temporary) / f'w1700k-{os.getuid()}'
     path.mkdir(mode=0o700, exist_ok=True)
     return path
 
@@ -90,6 +94,8 @@ class Unit:
         return f'{self.config.bin_dir}/{name}'
 
     def _ssh(self, command):
+        if self.config.transport == 'local':
+            return ['sh', '-c', command]
         argv = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=5',
                 '-o', 'ControlMaster=auto', '-o', f'ControlPath={self._control}', '-o', 'ControlPersist=600']
         if self.config.ssh_key:
@@ -149,5 +155,7 @@ class Unit:
 
     def close(self):
         """End the shared connection."""
+        if self.config.transport == 'local':
+            return
         subprocess.run(['ssh', '-o', f'ControlPath={self._control}', '-O', 'exit', self.target], stdin=subprocess.DEVNULL,
                        capture_output=True, timeout=10)

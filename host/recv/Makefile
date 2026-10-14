@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
 # sdr-recv: a C11 compiler; it reads w1700k-stream's shared memory (../stream/include).
 CC ?= cc
+include ../common/build.mk
 CFLAGS ?= -O2
 WARNINGS ?= -Wall -Wextra -Werror
 PREFIX ?= /usr/local
 override CFLAGS += -std=c11 -I../stream/include $(WARNINGS)
-LDLIBS += -lrt
+LDLIBS += $(RT_LIBS)
 
 .PHONY: all clean install
 all: build/sdr-recv

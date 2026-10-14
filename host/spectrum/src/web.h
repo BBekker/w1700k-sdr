@@ -73,7 +73,7 @@ private:
     std::string web_dir_;
     std::vector<std::unique_ptr<Asset>> assets_;
     std::string address_;
-    int listener_ = -1, epoll_ = -1, event_ = -1;
+    int listener_ = -1, epoll_ = -1, event_ = -1, event_write_ = -1;
     unsigned next_id_ = 1;
     std::map<unsigned, std::unique_ptr<Connection>> connections_;
 };

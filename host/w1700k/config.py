@@ -17,6 +17,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
@@ -31,6 +32,7 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class UnitConfig:
+    transport: str = 'ssh'          # 'local': execute on the router itself
     host: str = '192.168.1.1'
     user: str = 'root'
     ssh_key: str | None = None
@@ -41,6 +43,7 @@ class UnitConfig:
 
 @dataclass(frozen=True)
 class ExportConfig:
+    mode: str = 'udp'               # 'local': consume the DMA ring on the router
     interface: str = 'eth1'
     src_ip: str = '10.77.0.1'
     dst_ip: str = '10.77.0.10'
@@ -55,6 +58,7 @@ class Config:
     eeprom: Path | None = None        # None: see eeprom_path()
     firmware_dir: Path = REPO / 'firmware' / 'build'
     export: ExportConfig = field(default_factory=ExportConfig)
+    sample_rate: int | None = None   # initial rate for every band; Hz
 
 
 def _section(cls, values, name):
@@ -77,10 +81,12 @@ def parse(data):
     """A Config from the decoded JSON object, validated."""
     if not isinstance(data, dict):
         raise ConfigError('the configuration must be a JSON object')
-    unknown = sorted(set(data) - {'unit', 'eeprom', 'firmware_dir', 'export'})
+    unknown = sorted(set(data) - {'unit', 'eeprom', 'firmware_dir', 'export', 'sample_rate'})
     if unknown:
         raise ConfigError(f'unknown keys {unknown}')
     config = Config()
+    if 'sample_rate' in data:
+        config = replace(config, sample_rate=data['sample_rate'])
     if 'unit' in data:
         config = replace(config, unit=_section(UnitConfig, data['unit'], 'unit'))
     if 'export' in data:
@@ -95,6 +101,15 @@ def parse(data):
 
 
 def _validate(config):
+    if config.unit.transport not in ('ssh', 'local'):
+        raise ConfigError('unit.transport: expected ssh or local')
+    if config.export.mode not in ('udp', 'local'):
+        raise ConfigError('export.mode: expected udp or local')
+    if config.export.mode == 'local' and config.unit.transport != 'local':
+        raise ConfigError('local export requires local unit transport')
+    if config.sample_rate is not None and (type(config.sample_rate) is not int or
+            config.sample_rate not in (40_000_000, 80_000_000, 160_000_000, 320_000_000)):
+        raise ConfigError('sample_rate: expected 40000000, 80000000, 160000000 or 320000000 Hz')
     export = config.export
     for key in ('src_ip', 'dst_ip'):
         try:
@@ -125,7 +140,20 @@ def load(path=None):
 
 
 def local_mac_for(ip):
-    """The MAC of the local interface holding `ip` (iproute2 JSON), for the export's destination."""
+    """The MAC of the local interface holding `ip`, for the export's destination."""
+    if sys.platform == 'darwin':
+        try:
+            listing = subprocess.run(['/sbin/ifconfig', '-a'], capture_output=True, text=True,
+                                     check=True, stdin=subprocess.DEVNULL).stdout
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise ConfigError(f'cannot list local addresses ({exc}); set export.dst_mac')
+        for block in re.split(r'(?m)^(?=\S)', listing):
+            if re.search(r'(?m)^\s+inet ' + re.escape(ip) + r'\s', block):
+                mac = re.search(r'(?m)^\s+ether ((?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})\s', block)
+                if mac:
+                    return mac[1].lower()
+                raise ConfigError(f'interface holding {ip} has no Ethernet address; set export.dst_mac')
+        raise ConfigError(f'no local interface holds {ip}; configure it or set export.dst_mac')
     try:
         out = subprocess.run(['ip', '-j', '-4', 'addr', 'show'], capture_output=True, text=True, check=True,
                              stdin=subprocess.DEVNULL).stdout

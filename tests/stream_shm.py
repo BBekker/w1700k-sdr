@@ -1,8 +1,41 @@
 # SPDX-License-Identifier: MIT
 """Test helper: w1700k-stream's shared memory (host/stream/include/w1700k_stream.h) from Python."""
 import mmap
+import ctypes
+import ctypes.util
 import os
+import shlex
 import struct
+import subprocess
+
+_libc = ctypes.CDLL(ctypes.util.find_library('rt') or ctypes.util.find_library('c'), use_errno=True)
+_libc.shm_open.argtypes = (ctypes.c_char_p, ctypes.c_int, ctypes.c_uint)
+_libc.shm_open.restype = ctypes.c_int
+
+
+def open_shm(name, flags):
+    fd = _libc.shm_open(name.encode(), flags, 0)
+    if fd < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), name)
+    return fd
+
+
+def exists(name):
+    try:
+        fd = open_shm(name, os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    os.close(fd)
+    return True
+
+
+def fftw_flags():
+    try:
+        result = subprocess.run(['pkg-config', '--cflags', 'fftw3f'], capture_output=True, text=True)
+        return shlex.split(result.stdout) if result.returncode == 0 else []
+    except FileNotFoundError:
+        return []
 
 SLICE = 2048
 TAG_EVENT, TAG_LOST, TAG_FLAT = 1 << 63, 1 << 62, 1 << 61
@@ -23,9 +56,13 @@ FIELDS = {
 def ready(name):
     """The service has published its object and receives."""
     try:
-        with open("/dev/shm/" + name.lstrip("/"), "rb") as f:
-            head = f.read(16)
-    except OSError:
+        fd = open_shm(name, os.O_RDONLY)
+        try:
+            with mmap.mmap(fd, 16, access=mmap.ACCESS_READ) as mapping:
+                head = mapping[:16]
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
         return False
     return len(head) == 16 and struct.unpack("<4I", head)[:2] == (0x4D525453, 1)
 
@@ -36,9 +73,11 @@ def tag(run, index):
 
 class Shm:
     def __init__(self, name):
-        path = "/dev/shm/" + name.lstrip("/")
-        with open(path, "r+b") as f:
-            self.map = mmap.mmap(f.fileno(), 0)
+        fd = open_shm(name, os.O_RDWR)
+        try:
+            self.map = mmap.mmap(fd, os.fstat(fd).st_size)
+        finally:
+            os.close(fd)
         magic, version, _, slice_samples = struct.unpack_from("<4I", self.map, 0)
         assert (magic, version, slice_samples) == (0x4D525453, 1, SLICE), "not a w1700k-stream object"
 

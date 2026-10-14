@@ -89,9 +89,12 @@ def parse_result(page, reader=None):
 
 def stream_argv(tool, export, dst_mac):
     """The pump."""
-    return [tool, DEVICE, '--seconds', str(STREAM_SECONDS), '--idle-ms', str(IDLE_MS),
+    argv = [tool, DEVICE, '--seconds', str(STREAM_SECONDS), '--idle-ms', str(IDLE_MS),
             '--stop', f'{GO_ADDR:#010x}', f'{STOP_MAGIC:#010x}', '--threads', '0',
-            '--go', f'{GO_ADDR:#010x}', f'{GO_MAGIC:#010x}'] + [
+            '--go', f'{GO_ADDR:#010x}', f'{GO_MAGIC:#010x}']
+    if export.mode == 'local':
+        return argv + ['--cpu', str(PUMP_CPU)]
+    return argv + [
             '--export', export.interface, export.src_ip, export.dst_ip, dst_mac, str(export.port),
             '--ports', str(export.ports), '--drain-ms', str(DRAIN_MS),
             '--export-cpu', str(EXPORT_CPU), '--cpu', str(PUMP_CPU)]

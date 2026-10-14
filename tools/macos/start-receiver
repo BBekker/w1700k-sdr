@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Run the Mac stream receiver and local browser controls; Ctrl-C stops both."""
+import os
+from pathlib import Path
+import shlex
+import signal
+import subprocess
+import time
+
+root = Path(__file__).resolve().parents[2]
+config = root / 'tools/macos/build/receiver-config.json'
+if not config.is_file():
+    raise SystemExit(f'Missing receiver settings: {config}')
+python = root / 'tools/macos/.venv/bin/python'
+controller = shlex.join([str(python), str(root / 'host/bin/w1700k'), '--config', str(config), 'serve'])
+children = []
+
+def stop(signum, frame):
+    raise KeyboardInterrupt
+
+signal.signal(signal.SIGTERM, stop)
+try:
+    children.append(subprocess.Popen([str(root / 'host/stream/build/w1700k-stream'),
+                                      '--bind', '10.77.0.10', '--report', '5']))
+    children.append(subprocess.Popen([str(root / 'host/spectrum/build/w1700k-spectrum'),
+                                      '--controller', controller, '--listen', '127.0.0.1:8073',
+                                      '--rate', '40', '--center', '2442']))
+    print('Receiver controls: http://127.0.0.1:8073/ — press Play after the streaming link is ready.', flush=True)
+    while all(child.poll() is None for child in children):
+        time.sleep(0.5)
+except KeyboardInterrupt:
+    pass
+finally:
+    for child in reversed(children):
+        if child.poll() is None:
+            child.terminate()
+    for child in children:
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()

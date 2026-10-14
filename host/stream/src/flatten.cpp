@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "flatten.h"
+#include "../../common/fft.h"
 
 #include <cmath>
 #include <map>
@@ -137,8 +138,8 @@ FlattenRun::FlattenRun()
 {
     buffer_ = fftwf_alloc_complex(Flatten::kFft);
     std::lock_guard<std::mutex> lock(planner);
-    forward_ = fftwf_plan_dft_1d(int(Flatten::kFft), buffer_, buffer_, FFTW_FORWARD, FFTW_MEASURE);
-    inverse_ = fftwf_plan_dft_1d(int(Flatten::kFft), buffer_, buffer_, FFTW_BACKWARD, FFTW_MEASURE);
+    forward_ = fftwf_plan_dft_1d(int(Flatten::kFft), buffer_, buffer_, FFTW_FORWARD, w1700k_fft_plan_flags());
+    inverse_ = fftwf_plan_dft_1d(int(Flatten::kFft), buffer_, buffer_, FFTW_BACKWARD, w1700k_fft_plan_flags());
     if (!forward_ || !inverse_) throw std::runtime_error("FFTW could not plan the correction's transforms");
 }
 

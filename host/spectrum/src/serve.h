@@ -5,12 +5,14 @@
 #include <string>
 
 #include "w1700k_stream.h"
+#include "spectrum.h"
 
 struct ServeOptions {
     std::string listen = "127.0.0.1:8073";    // HTTP address:port
     std::string web_dir;                      // serve the UI from here instead of the built-in copy
     std::string stream = W1700K_STREAM_NAME;  // w1700k-stream's shared memory
     unsigned fft_threads = 4;                 // FFT workers
+    SpectrumSettings fft;                    // initial FFT workload
     std::string controller = "w1700k serve";  // the receiver's controller; empty: a passive viewer
     // The stream's tuning until the controller reports it, and always for a passive viewer.
     double center_hz = 5250e6;

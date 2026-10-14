@@ -19,7 +19,9 @@
       "target/linux/generic/files",
       "target/linux/airoha/patches-6.18",
       "target/linux/airoha/dts",
-      "package/firmware/rtl826x-firmware"
+      "package/firmware/rtl826x-firmware",
+      "tools/include",
+      "tools/mtd-utils"
     ]
   },
   "u-boot": {

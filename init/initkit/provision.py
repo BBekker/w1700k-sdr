@@ -19,6 +19,7 @@ from pathlib import Path
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 
 from . import config
@@ -197,7 +198,9 @@ def build(unit_directory, public_key, dropbear_key, generic=config.ROOTFS,
         env = dict(os.environ, TZ='UTC', LC_ALL='C')
         env.pop('SOURCE_DATE_EPOCH', None)
         partial = Path(temporary) / IMAGE
-        subprocess.run([str(mksquashfs), str(tree), str(partial), *MKSQUASHFS_OPTIONS],
+        # unsquashfs omits source xattrs; Darwin adds its own provenance attrs.
+        options = MKSQUASHFS_OPTIONS + (['-no-xattrs'] if sys.platform == 'darwin' else [])
+        subprocess.run([str(mksquashfs), str(tree), str(partial), *options],
                        env=env, check=True, stdout=subprocess.DEVNULL)
         if partial.read_bytes()[:4] != b'hsqs':
             raise ProvisionError('mksquashfs did not produce a SquashFS image')

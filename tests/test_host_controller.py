@@ -51,6 +51,25 @@ class ControllerTest(unittest.TestCase):
 
 
 class Load(ControllerTest):
+    def test_configured_rate_reaches_radio_on_every_band(self):
+        from dataclasses import replace
+        ctl = Controller(replace(self.config, sample_rate=40_000_000), unit=self.unit)
+        try:
+            ctl.attach()
+            ctl.load()
+            captures = [args for name, args in self.dev.radio_commands if name == 'capture']
+            self.assertEqual(captures, [(0, 0), (2, 0), (1, 0)])
+            self.assertEqual(ctl.state()['radio']['sample_rate'], 40_000_000)
+        finally:
+            ctl.close()
+
+    def test_configuration_rejects_invalid_rate(self):
+        from w1700k.config import parse, ConfigError
+        self.assertEqual(parse({'sample_rate': 40_000_000}).sample_rate, 40_000_000)
+        for rate in (80, '40000000', True, 40_000_000.0):
+            with self.assertRaises(ConfigError):
+                parse({'sample_rate': rate})
+
     def test_load_sequence(self):
         """Driver reload, ownership, RESET_MT, our set; the EEPROM, BRINGUP, per band (the captured band
         last) its analog filter (FILTER, before SETUP's DCOC), SETUP and CAPTURE, SELECT;

@@ -1,15 +1,27 @@
 // SPDX-License-Identifier: MIT
 #include "ingest.h"
+#include "../../common/posix.h"
 
 #include <chrono>
 #include <cstring>
+#include <cstdio>
 #include <mutex>
 #include <stdexcept>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+// The C ABI names a field `export`, a reserved keyword in C++.
+#define export export_config
+#include "../../../include/uapi/w1700k_sdr.h"
+#undef export
+#endif
 
 namespace {
 
@@ -18,6 +30,33 @@ constexpr uint32_t kMagic = 0x31524453;
 constexpr size_t kHeader = 16;
 constexpr unsigned kBatch = 64;
 constexpr size_t kDatagram = 9216;
+#ifdef __APPLE__
+struct RxMessage {
+    msghdr msg_hdr;
+    unsigned msg_len;
+};
+
+// Wait for the first datagram, then drain the available batch without blocking.
+int receive_batch(int fd, RxMessage *messages, unsigned count)
+{
+    unsigned received = 0;
+    while (received < count) {
+        ssize_t bytes = recvmsg(fd, &messages[received].msg_hdr, received ? MSG_DONTWAIT : 0);
+        if (bytes < 0) {
+            if (errno == EINTR) continue;
+            return received ? int(received) : -1;
+        }
+        messages[received++].msg_len = unsigned(bytes);
+    }
+    return int(received);
+}
+#else
+using RxMessage = mmsghdr;
+int receive_batch(int fd, RxMessage *messages, unsigned count)
+{
+    return recvmmsg(fd, messages, count, MSG_WAITFORONE, nullptr);
+}
+#endif
 constexpr size_t kRawBytes = kSliceSamples * 4;
 constexpr size_t kPackedBytes = kSliceSamples / 8 * 7 * 4;
 constexpr size_t kMinSliceBytes = 4096;          // shorter completions are firmware events
@@ -96,10 +135,20 @@ struct Ingest::Worker {
 };
 
 Ingest::Ingest(SampleRing &ring, const std::string &bind_ip, unsigned port, unsigned threads)
-    : ring_(ring), bind_ip_(bind_ip), port_(port), threads_(threads)
+    : ring_(ring), bind_ip_(bind_ip), port_(port),
+#ifdef __APPLE__
+      threads_(1)
+#else
+      threads_(threads)
+#endif
 {
     in_addr check;
-    if (inet_pton(AF_INET, bind_ip.c_str(), &check) != 1) throw std::runtime_error("not an IPv4 address: " + bind_ip);
+    if (bind_ip.rfind("/dev/", 0) != 0 && inet_pton(AF_INET, bind_ip.c_str(), &check) != 1)
+        throw std::runtime_error("not an IPv4 address: " + bind_ip);
+#ifdef __APPLE__
+    // Darwin's SO_REUSEPORT does not provide Linux's UDP flow distribution.
+    (void)threads;
+#endif
 }
 
 // Binds the sockets and starts receiving: not before, or the kernel would queue (and then
@@ -107,6 +156,35 @@ Ingest::Ingest(SampleRing &ring, const std::string &bind_ip, unsigned port, unsi
 void Ingest::start()
 {
     if (!workers_.empty()) return;
+    if (bind_ip_.rfind("/dev/", 0) == 0) {
+#ifdef __linux__
+        auto w = std::make_unique<Worker>();
+        w->fd = open(bind_ip_.c_str(), O_RDWR | O_CLOEXEC);
+        w1700k_sdr_info info{};
+        w1700k_sdr_stream_rx geometry{};
+        if (w->fd < 0 || ioctl(w->fd, W1700K_SDR_GET_INFO, &info) ||
+            info.abi_version != W1700K_SDR_ABI_VERSION ||
+            ioctl(w->fd, W1700K_SDR_STREAM_RX, &geometry) ||
+            !geometry.slices || geometry.slice_bytes != kRawBytes ||
+            geometry.slices <= geometry.slots + 128) {
+            if (w->fd >= 0) close(w->fd);
+            throw std::runtime_error("cannot read SDR DMA geometry; load the radio first");
+        }
+        device_bytes_ = geometry.header_bytes + size_t(geometry.slices) * geometry.slice_bytes;
+        device_map_ = mmap(nullptr, device_bytes_, PROT_READ, MAP_SHARED, w->fd, 0);
+        if (device_map_ == MAP_FAILED) {
+            const std::string why = std::strerror(errno);
+            device_map_ = nullptr;
+            close(w->fd);
+            throw std::runtime_error("cannot map SDR DMA ring: " + why);
+        }
+        workers_.push_back(std::move(w));
+        workers_[0]->thread = std::thread([this] { work_device(*workers_[0]); });
+        return;
+#else
+        throw std::runtime_error("direct SDR DMA input requires Linux on the router");
+#endif
+    }
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(uint16_t(port_));
@@ -115,10 +193,25 @@ void Ingest::start()
         auto w = std::make_unique<Worker>();
         int one = 1, rcvbuf = 48 << 20;
         timeval tick{0, 100000};
-        w->fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);  // not inherited by the controller
+        w->fd = socket_cloexec(AF_INET, SOCK_DGRAM, 0);
+        int buffer_result = -1;
+#ifdef __APPLE__
+        // Darwin may cap the first request, but reject a repeated oversized request.
+        while (w->fd >= 0 && (buffer_result = setsockopt(w->fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)))) {
+            if ((errno != ENOBUFS && errno != EINVAL) || rcvbuf <= 65536) break;
+            rcvbuf /= 2;
+        }
+        socklen_t buffer_size = sizeof(rcvbuf);
+        if (!buffer_result) getsockopt(w->fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &buffer_size);
+        std::fprintf(stderr, "w1700k-stream: macOS uses one receive socket, buffer %d bytes\n", rcvbuf);
+#else
+        if (w->fd >= 0) buffer_result = setsockopt(w->fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+#endif
         if (w->fd < 0 || setsockopt(w->fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) ||
-            setsockopt(w->fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) ||
+            buffer_result ||
+#ifndef __APPLE__
             setsockopt(w->fd, SOL_SOCKET, SO_RXQ_OVFL, &one, sizeof(one)) ||
+#endif
             setsockopt(w->fd, SOL_SOCKET, SO_RCVTIMEO, &tick, sizeof(tick)) ||
             bind(w->fd, reinterpret_cast<sockaddr *>(&address), sizeof(address))) {
             std::string why = std::strerror(errno);
@@ -137,11 +230,51 @@ Ingest::~Ingest()
         if (w->thread.joinable()) w->thread.join();
         close(w->fd);
     }
+#ifdef __linux__
+    if (device_map_) munmap(device_map_, device_bytes_);
+#endif
+}
+
+void Ingest::work_device(Worker &w)
+{
+#ifdef __linux__
+    const auto *h = static_cast<const w1700k_sdr_stream_ring *>(device_map_);
+    const auto *samples = static_cast<const uint8_t *>(device_map_) + h->header_bytes;
+    const uint64_t safe = h->slices - h->slots;
+    uint64_t next = __atomic_load_n(&h->completed, __ATOMIC_ACQUIRE);
+    alignas(8) uint8_t packet[kHeader + kRawBytes];
+    while (!stopping_.load(std::memory_order_relaxed)) {
+        const uint64_t completed = __atomic_load_n(&h->completed, __ATOMIC_ACQUIRE);
+        // Leave a margin behind the producer, matching the kernel UDP exporter.
+        const uint64_t end = completed > 64 ? completed - 64 : 0;
+        if (next >= end) { usleep(500); continue; }
+        if (completed - next >= safe) {
+            w.drops.fetch_add(completed - next - 64, std::memory_order_relaxed);
+            next = end;
+            new_run_.store(true, std::memory_order_release);
+            continue;
+        }
+        const uint16_t length = (h->ctrl[next % h->slices] >> 16) & 0x3fff;
+        if (length > kRawBytes) { ++w.bad; ++next; continue; }
+        const uint16_t offset = 0;
+        std::memcpy(packet, &kMagic, 4);
+        std::memcpy(packet + 4, &offset, 2);
+        std::memcpy(packet + 6, &length, 2);
+        std::memcpy(packet + 8, &next, 8);
+        std::memcpy(packet + kHeader, samples + (next % h->slices) * h->slice_bytes, length);
+        if (__atomic_load_n(&h->completed, __ATOMIC_ACQUIRE) - next >= safe) continue;
+        const uint64_t t = now_ns(), previous = last_ns_.exchange(t, std::memory_order_acq_rel);
+        take(w, packet, kHeader + length, previous && t - previous > kRunGapNs, t);
+        ++next;
+    }
+#else
+    (void)w;
+#endif
 }
 
 void Ingest::work(Worker &w)
 {
-    mmsghdr msgs[kBatch];
+    RxMessage msgs[kBatch];
     iovec iov[kBatch];
     char control[kBatch][CMSG_SPACE(sizeof(uint32_t))];
     while (!stopping_.load(std::memory_order_relaxed)) {
@@ -153,7 +286,7 @@ void Ingest::work(Worker &w)
             msgs[k].msg_hdr.msg_control = control[k];
             msgs[k].msg_hdr.msg_controllen = sizeof(control[k]);
         }
-        int n = recvmmsg(w.fd, msgs, kBatch, MSG_WAITFORONE, nullptr);
+        int n = receive_batch(w.fd, msgs, kBatch);
         if (n <= 0) continue;
         // A second of silence ends the run: the next slice starts another. Signed: another
         // thread may have stamped a later time between our clock read and the exchange.
@@ -161,12 +294,14 @@ void Ingest::work(Worker &w)
         bool fresh = previous && int64_t(t - previous) > int64_t(kRunGapNs);
         for (int k = 0; k < n; ++k) {
             take(w, &w.buffers[k * kDatagram], msgs[k].msg_len, fresh && k == 0, t);
+#ifndef __APPLE__
             for (cmsghdr *c = CMSG_FIRSTHDR(&msgs[k].msg_hdr); c; c = CMSG_NXTHDR(&msgs[k].msg_hdr, c))
                 if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SO_RXQ_OVFL) {
                     uint32_t drops;
                     std::memcpy(&drops, CMSG_DATA(c), sizeof(drops));
                     w.drops.store(drops, std::memory_order_relaxed);
                 }
+#endif
         }
     }
 }

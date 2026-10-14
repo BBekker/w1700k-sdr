@@ -72,6 +72,9 @@ def git_checkout(dest, url, commit, paths=(), tag=None):
     if dest.is_dir():
         head = output(['git', '-C', dest, 'rev-parse', 'HEAD']).strip()
         if head == commit:
+            if paths and any(not (dest / path).exists() for path in paths):
+                run(['git', '-C', dest, 'sparse-checkout', 'set', '--no-cone',
+                     *[f'/{path}/' for path in paths]])
             return dest
         shutil.rmtree(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)

@@ -64,6 +64,8 @@ between them, in 1.22 kHz bins.*
 
 ## Getting started
 
+For native macOS builds and the Mac receiver, see [tools/macos/README.md](tools/macos/README.md).
+
 You need a W1700K (HW 1.x) or W1700K2 (HW 2.1), a 3.3 V USB serial adapter on
 its console header, an Ethernet cable to its `lan3` port for installation, and
 a 10 GbE NIC on the host cabled to its `wan` port (10GBASE-T; an X710 with a

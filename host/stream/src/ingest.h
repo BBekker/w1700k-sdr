@@ -87,6 +87,7 @@ public:
 private:
     struct Worker;
     void work(Worker &w);
+    void work_device(Worker &w);
     void take(Worker &w, const uint8_t *data, size_t n, bool fresh, uint64_t t);
     void check(Worker &w, uint64_t run, uint64_t index);
 
@@ -95,6 +96,10 @@ private:
     const unsigned port_, threads_;
     std::atomic<bool> stopping_{false};
     std::vector<std::unique_ptr<Worker>> workers_;
+#ifdef __linux__
+    void *device_map_ = nullptr;
+    size_t device_bytes_ = 0;
+#endif
 
     // The run: its first sequence number, and the newest slot filled.
     std::atomic<uint64_t> run_{0}, base_{0}, newest_{0};

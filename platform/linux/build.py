@@ -123,7 +123,9 @@ def phy_firmware(openwrt):
                 shutil.copyfile(path, work / Path(name).name)
             else:
                 run(['patch', '-s', '-p1', '-i', path], cwd=work, log=LOG)
-        run(['cc', '-O1', '-w', 'rtl8261n_rtl8264b.c', 'phy_patch.c', '-o', 'phy_patch'],
+        host_flags = (['-I', str(UNIT.parents[1] / 'tools/macos/phy-include'),
+                       '-I', str(openwrt / 'tools/include')] if sys.platform == 'darwin' else [])
+        run(['cc', '-O1', '-w', *host_flags, 'rtl8261n_rtl8264b.c', 'phy_patch.c', '-o', 'phy_patch'],
             cwd=work, log=LOG)
         run(['./phy_patch'], cwd=work, log=LOG)
         generated = work / 'rtl8261n.bin'
@@ -151,8 +153,12 @@ def ce_firmware():
 
 
 def kernel_make(*targets):
+    host_flags = []
+    if sys.platform == 'darwin':
+        host_flags.append(f'HOSTCFLAGS={os.environ.get("HOSTCFLAGS", "")} '
+                          f'-I{SRC / "openwrt/tools/include"}')
     run(['make', '-C', LINUX_SRC, f'O={LINUX_OUT}', 'ARCH=arm64',
-         f'CROSS_COMPILE={CROSS_COMPILE}', f'-j{jobs()}', *targets],
+         f'CROSS_COMPILE={CROSS_COMPILE}', f'-j{jobs()}', *host_flags, *targets],
         env=build_env(), log=LOG)
 
 

@@ -5,6 +5,10 @@ ROOT := $(abspath ../..)
 OUT := $(ROOT)/platform/build/linux
 CROSS_COMPILE ?= $(ROOT)/platform/build/buildroot/host/bin/aarch64-buildroot-linux-musl-
 export PATH := $(ROOT)/platform/build/buildroot/host/bin:$(PATH)
+ifeq ($(shell uname -s),Darwin)
+HOSTCFLAGS += -I$(ROOT)/platform/build/src/openwrt/tools/include
+export HOSTCFLAGS
+endif
 .PHONY: kernel module reader
 kernel:
 	python3 build.py

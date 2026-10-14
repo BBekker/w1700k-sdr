@@ -16,7 +16,6 @@
 
 namespace {
 
-constexpr unsigned kReceiveSlices = 32768;  // the reorder ring: 256 MiB, 0.2 s at 320 Msps
 
 std::atomic<bool> stop_requested{false};
 void on_signal(int) { stop_requested = true; }
@@ -26,6 +25,8 @@ void usage()
     std::fprintf(stderr,
                  "usage: w1700k-stream [options]\n"
                  "  --bind IP         the stream's destination address on this host (default 10.77.0.10)\n"
+                 "  --device PATH     read the router's SDR DMA ring directly (Linux only)\n"
+                 "  --receive-mib N   input ring size, a power of two (default 256)\n"
                  "  --port N          its UDP port (default 7700)\n"
                  "  --rx-threads N    UDP sockets and receive threads (default 8)\n"
                  "  --workers N       unpacking and correction threads (default 6)\n"
@@ -53,7 +54,7 @@ unsigned positive(const std::string &option, const std::string &text, unsigned l
 int main(int argc, char **argv)
 {
     std::string bind = "10.77.0.10", name = W1700K_STREAM_NAME;
-    unsigned port = 7700, rx_threads = 8, workers = 6, ring_mib = 512, report = 0;
+    unsigned port = 7700, rx_threads = 8, workers = 6, ring_mib = 512, receive_mib = 256, report = 0;
     try {
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
@@ -62,6 +63,11 @@ int main(int argc, char **argv)
                 return argv[++i];
             };
             if (arg == "--bind") bind = value();
+            else if (arg == "--device") {
+                bind = value();
+                if (bind.rfind("/dev/", 0) != 0) throw std::runtime_error("--device needs a /dev/ path");
+            }
+            else if (arg == "--receive-mib") receive_mib = positive(arg, value(), 1u << 16);
             else if (arg == "--port") port = positive(arg, value(), 65535);
             else if (arg == "--rx-threads") rx_threads = positive(arg, value(), 64);
             else if (arg == "--workers") workers = positive(arg, value(), 64);
@@ -76,6 +82,7 @@ int main(int argc, char **argv)
             }
         }
         if (ring_mib & (ring_mib - 1)) throw std::runtime_error("--ring-mib must be a power of two");
+        if (receive_mib & (receive_mib - 1)) throw std::runtime_error("--receive-mib must be a power of two");
     } catch (const std::exception &e) {
         std::fprintf(stderr, "w1700k-stream: %s\n", e.what());
         usage();
@@ -86,7 +93,7 @@ int main(int argc, char **argv)
     std::signal(SIGTERM, on_signal);
     try {
         SharedRing shared(name, ring_mib * 128);
-        SampleRing received(kReceiveSlices);
+        SampleRing received(receive_mib * 128);
         Ingest ingest(received, bind, port, rx_threads);
         Publisher publisher(received, ingest, shared.header(), workers);
         publisher.start();

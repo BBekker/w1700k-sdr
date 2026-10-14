@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Mount the case-sensitive build volume without modifying existing build files."""
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+if sys.platform != 'darwin':
+    sys.exit('this helper is for macOS')
+root = Path(__file__).resolve().parents[2]
+mount = root / 'platform/build'
+image = root / 'tools/macos/build/platform.sparseimage'
+
+if os.path.ismount(mount):
+    with tempfile.NamedTemporaryFile(prefix='w1700k-case-', dir=mount) as probe:
+        path = Path(probe.name)
+        if path.with_name(path.name.upper()).exists():
+            sys.exit(f'{mount} is mounted, but is not a case-sensitive filesystem')
+    print(f'Build volume is ready: {mount}')
+    sys.exit(0)
+if mount.exists() and any(mount.iterdir()):
+    sys.exit(f'{mount} contains files; move them aside before mounting the build volume')
+mount.mkdir(parents=True, exist_ok=True)
+if not image.exists():
+    image.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(['hdiutil', 'create', '-size', '40g', '-type', 'SPARSE',
+                    '-fs', 'Case-sensitive APFS', '-volname', 'W1700K Build', str(image)], check=True)
+subprocess.run(['hdiutil', 'attach', str(image), '-mountpoint', str(mount), '-nobrowse'], check=True)

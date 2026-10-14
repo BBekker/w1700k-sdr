@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "web.h"
+#include "../../common/posix.h"
 
 #include <algorithm>
 #include <array>
@@ -15,8 +16,12 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#ifdef __APPLE__
+#include <poll.h>
+#else
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#endif
 #include <sys/socket.h>
 #include <unistd.h>
 #include <zlib.h>
@@ -215,7 +220,7 @@ WebServer::WebServer(const std::string &listen, const std::string &web_dir, Hand
     if (int error = getaddrinfo(host.c_str(), port.c_str(), &hints, &found))
         throw std::runtime_error("cannot listen on " + listen + ": " + gai_strerror(error));
     for (addrinfo *a = found; a && listener_ < 0; a = a->ai_next) {
-        int fd = socket(a->ai_family, a->ai_socktype | SOCK_CLOEXEC, a->ai_protocol);
+        int fd = socket_cloexec(a->ai_family, a->ai_socktype, a->ai_protocol);
         if (fd < 0) continue;
         int yes = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
@@ -236,14 +241,24 @@ WebServer::WebServer(const std::string &listen, const std::string &web_dir, Hand
     if (listener_ < 0) throw std::runtime_error("cannot listen on " + listen + ": " + std::strerror(errno));
     set_nonblocking(listener_);
 
+#ifdef __APPLE__
+    int wake_pipe[2];
+    if (pipe_cloexec(wake_pipe)) throw std::runtime_error("cannot create web wake pipe");
+    event_ = wake_pipe[0];
+    event_write_ = wake_pipe[1];
+    set_nonblocking(event_);
+    set_nonblocking(event_write_);
+#else
     epoll_ = epoll_create1(EPOLL_CLOEXEC);
     event_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    event_write_ = event_;
     epoll_event ev{};
     ev.events = EPOLLIN;
     ev.data.u64 = 0;
     epoll_ctl(epoll_, EPOLL_CTL_ADD, listener_, &ev);
     ev.data.u64 = ~0ull;
     epoll_ctl(epoll_, EPOLL_CTL_ADD, event_, &ev);
+#endif
 }
 
 WebServer::~WebServer()
@@ -251,22 +266,50 @@ WebServer::~WebServer()
     connections_.clear();
     if (listener_ >= 0) ::close(listener_);
     if (event_ >= 0) ::close(event_);
+    if (event_write_ >= 0 && event_write_ != event_) ::close(event_write_);
     if (epoll_ >= 0) ::close(epoll_);
 }
 
 void WebServer::wake()
 {
     uint64_t one = 1;
-    if (write(event_, &one, sizeof(one)) < 0) {
+    if (write(event_write_, &one, sizeof(one)) < 0) {
         // The counter is saturated only if nobody reads it; nothing to do.
     }
 }
 
 void WebServer::run(const std::atomic<bool> &stop)
 {
+#ifndef __APPLE__
     epoll_event events[64];
+#endif
     auto last_tick = Clock::now();
     while (!stop) {
+#ifdef __APPLE__
+        std::vector<pollfd> events{{listener_, POLLIN, 0}, {event_, POLLIN, 0}};
+        std::vector<unsigned> clients;
+        for (const auto &entry : connections_) {
+            if (entry.second->dead) continue;
+            events.push_back({entry.second->fd, short(POLLIN | (entry.second->pending() ? POLLOUT : 0)), 0});
+            clients.push_back(entry.first);
+        }
+        if (poll(events.data(), events.size(), 20) < 0 && errno != EINTR)
+            throw std::runtime_error("poll failed");
+        if (events[0].revents & POLLIN) accept_clients();
+        if (events[1].revents & POLLIN) {
+            uint64_t count;
+            while (read(event_, &count, sizeof(count)) > 0) {}
+            if (handler_.wake) handler_.wake();
+        }
+        for (size_t i = 0; i < clients.size(); ++i) {
+            if (Connection *c = find(clients[i])) {
+                const short ready = events[i + 2].revents;
+                if (ready & (POLLERR | POLLNVAL)) c->dead = true;
+                if (!c->dead && (ready & (POLLIN | POLLHUP))) receive(*c);
+                if (!c->dead && (ready & POLLOUT)) flush(*c);
+            }
+        }
+#else
         int n = epoll_wait(epoll_, events, 64, 20);
         if (n < 0 && errno != EINTR) throw std::runtime_error("epoll failed");
         for (int i = 0; i < n; ++i) {
@@ -284,6 +327,7 @@ void WebServer::run(const std::atomic<bool> &stop)
                 if (!c->dead && (events[i].events & EPOLLOUT)) flush(*c);
             }
         }
+#endif
         reap();
         auto now = Clock::now();
         if (now - last_tick >= 20ms) {
@@ -315,7 +359,12 @@ void WebServer::accept_clients()
     for (;;) {
         sockaddr_storage address{};
         socklen_t length = sizeof(address);
+#ifdef __APPLE__
+        int fd = close_on_exec(accept(listener_, reinterpret_cast<sockaddr *>(&address), &length));
+        if (fd >= 0) set_nonblocking(fd);
+#else
         int fd = accept4(listener_, reinterpret_cast<sockaddr *>(&address), &length, SOCK_NONBLOCK | SOCK_CLOEXEC);
+#endif
         if (fd < 0) return;
         int yes = 1;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
@@ -330,10 +379,12 @@ void WebServer::accept_clients()
         if (getnameinfo(reinterpret_cast<sockaddr *>(&address), length, name, sizeof(name), nullptr, 0,
                         NI_NUMERICHOST) == 0)
             c->peer = name;
+#ifndef __APPLE__
         epoll_event ev{};
         ev.events = EPOLLIN | EPOLLRDHUP;
         ev.data.u64 = c->id;
         epoll_ctl(epoll_, EPOLL_CTL_ADD, fd, &ev);
+#endif
         connections_[c->id] = std::move(c);
     }
 }
@@ -394,10 +445,12 @@ void WebServer::flush(Connection &c)
     bool want = c.pending() != 0;
     if (want != c.writable_wait) {
         c.writable_wait = want;
+#ifndef __APPLE__
         epoll_event ev{};
         ev.events = EPOLLIN | EPOLLRDHUP | (want ? uint32_t(EPOLLOUT) : 0u);
         ev.data.u64 = c.id;
         epoll_ctl(epoll_, EPOLL_CTL_MOD, c.fd, &ev);
+#endif
     }
 }
 
@@ -409,7 +462,9 @@ void WebServer::reap()
             ++it;
             continue;
         }
+#ifndef __APPLE__
         epoll_ctl(epoll_, EPOLL_CTL_DEL, it->second->fd, nullptr);
+#endif
         ::close(it->second->fd);
         if (it->second->websocket) closed.push_back(it->first);
         it = connections_.erase(it);

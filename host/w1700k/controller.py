@@ -79,6 +79,10 @@ class Controller:
         self.boot_id = None
         self.loaded = False
         self.bands = dict(DEFAULT_BANDS)
+        if config.sample_rate is not None:
+            self.bands = {b: replace(cfg, sample_rate=config.sample_rate,
+                                    capture_rate=config.sample_rate).validate()
+                          for b, cfg in self.bands.items()}
         self.bands_ready = []
         self.band = DEFAULT_BAND
         self.packing = None               # the running stream's packing; None: no stream
@@ -446,8 +450,10 @@ class Controller:
         if not self.loaded:
             self._load()
         export = self.config.export
-        dst_mac = export.dst_mac or local_mac_for(export.dst_ip)
-        self.stream.check_interface(export.interface)
+        dst_mac = None
+        if export.mode == 'udp':
+            dst_mac = export.dst_mac or local_mac_for(export.dst_ip)
+            self.stream.check_interface(export.interface)
         self.stream.install_own(self._wm(), packing)
         self.stream.launch(export, dst_mac)
         self.packing = packing

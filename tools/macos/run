@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Run a project command with native macOS GNU/LLVM build tools.
+
+    tools/macos/run make firmware
+    tools/macos/run make toolchain
+
+Only this child process receives the environment; shell startup files and the
+system toolchain are not changed. platform/build must be case-sensitive for
+the complete platform build.
+"""
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+if sys.platform != 'darwin':
+    sys.exit('this helper is for macOS')
+
+root = Path(__file__).resolve().parents[2]
+brew = Path(subprocess.check_output(['brew', '--prefix'], text=True).strip())
+paths = []
+for name in ('make', 'coreutils', 'gnu-sed', 'gnu-tar', 'gawk', 'gpatch', 'findutils'):
+    paths.append(brew / 'opt' / name / 'libexec/gnubin')
+for name in ('gnu-getopt', 'cpio', 'bison', 'flex', 'lld', 'llvm'):
+    paths.append(brew / 'opt' / name / 'bin')
+paths.extend((brew / 'bin', Path('/usr/bin'), Path('/bin'), Path('/usr/sbin'), Path('/sbin')))
+paths[0:0] = [root / path for path in ('host/bin', 'host/stream/build',
+                                      'host/spectrum/build', 'host/recv/build')]
+venv = root / 'tools/macos/.venv/bin'
+if venv.is_dir():
+    paths.insert(0, venv)
+env = dict(os.environ)
+env['PATH'] = os.pathsep.join(str(p) for p in paths if p.is_dir())
+env['PYTHONDONTWRITEBYTECODE'] = '1'
+env.setdefault('HOSTCC', str(brew / 'bin/gcc-14'))
+env.setdefault('HOSTCXX', str(brew / 'bin/g++-14'))
+env.setdefault('HOSTCPP', str(brew / 'bin/cpp-14'))
+env.setdefault('JOBS', str(min(os.cpu_count() or 4, 8)))
+os.chdir(root)
+argv = sys.argv[1:] or ['make']
+os.execvpe(argv[0], argv, env)

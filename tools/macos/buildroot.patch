@@ -1,0 +1,266 @@
+diff --git a/fs/common.mk b/fs/common.mk
+index 2f3f8bcc..85381867 100644
+--- a/fs/common.mk
++++ b/fs/common.mk
+@@ -1,3 +1,7 @@
++ifeq ($(shell uname -s),Darwin)
++HOST_FAKEROOT_SHELL := $(shell command -v bash)
++endif
++
+ #
+ # Macro that builds the needed Makefile target to create a root
+ # filesystem image.
+@@ -192,7 +196,7 @@ $$(BINARIES_DIR)/$$(ROOTFS_$(2)_FINAL_IMAGE_NAME): $$(ROOTFS_$(2)_DEPENDENCIES)
+ 	$$(call PRINTF,$$(ROOTFS_SELINUX)) >> $$(FAKEROOT_SCRIPT)
+ 	$$(call PRINTF,$$(ROOTFS_$(2)_CMD)) >> $$(FAKEROOT_SCRIPT)
+ 	chmod a+x $$(FAKEROOT_SCRIPT)
+-	PATH=$$(BR_PATH) FAKEROOTDONTTRYCHOWN=1 $$(HOST_DIR)/bin/fakeroot -- $$(FAKEROOT_SCRIPT)
++	PATH=$$(BR_PATH) FAKEROOTDONTTRYCHOWN=1 $$(HOST_DIR)/bin/fakeroot -- $$(HOST_FAKEROOT_SHELL) $$(FAKEROOT_SCRIPT)
+ 	$(Q)rm -rf $$(TARGET_DIR)
+ ifneq ($$(ROOTFS_$(2)_COMPRESS_CMD),)
+ 	PATH=$$(BR_PATH) $$(ROOTFS_$(2)_COMPRESS_CMD) $$@ > $$@$$(ROOTFS_$(2)_COMPRESS_EXT)
+diff --git a/package/fakeroot/fakeroot.mk b/package/fakeroot/fakeroot.mk
+index 12d7f1c4..347a4c3b 100644
+--- a/package/fakeroot/fakeroot.mk
++++ b/package/fakeroot/fakeroot.mk
+@@ -8,7 +8,9 @@ FAKEROOT_VERSION = 1.37.2
+ FAKEROOT_SOURCE = fakeroot_$(FAKEROOT_VERSION).orig.tar.gz
+ FAKEROOT_SITE = https://snapshot.debian.org/archive/debian/20260401T000000Z/pool/main/f/fakeroot
+ 
++ifneq ($(shell uname -s),Darwin)
+ HOST_FAKEROOT_DEPENDENCIES = host-acl
++endif
+ # Force capabilities detection off
+ # For now these are process capabilities (faked) rather than file
+ # so they're of no real use
+diff --git a/package/libzlib/libzlib.mk b/package/libzlib/libzlib.mk
+index d71d5d52..cf67b532 100644
+--- a/package/libzlib/libzlib.mk
++++ b/package/libzlib/libzlib.mk
+@@ -31,6 +31,7 @@ define LIBZLIB_CONFIGURE_CMDS
+ 		$(TARGET_CONFIGURE_ARGS) \
+ 		$(TARGET_CONFIGURE_OPTS) \
+ 		CFLAGS="$(TARGET_CFLAGS) $(LIBZLIB_PIC)" \
++		CHOST="$(GNU_TARGET_NAME)" \
+ 		./configure \
+ 		$(LIBZLIB_SHARED) \
+ 		--prefix=/usr \
+diff --git a/package/lz4/lz4.mk b/package/lz4/lz4.mk
+index 60d321ba..b66c5e1d 100644
+--- a/package/lz4/lz4.mk
++++ b/package/lz4/lz4.mk
+@@ -18,8 +18,8 @@ LZ4_MAKE_OPTS += BUILD_STATIC=no
+ endif
+ 
+ define HOST_LZ4_BUILD_CMDS
+-	$(HOST_MAKE_ENV) $(HOST_CONFIGURE_OPTS) $(MAKE) -C $(@D) lib
+-	$(HOST_MAKE_ENV) $(HOST_CONFIGURE_OPTS) $(MAKE) -C $(@D) lz4
++	$(HOST_MAKE_ENV) $(HOST_CONFIGURE_OPTS) $(MAKE) PREFIX=$(HOST_DIR) -C $(@D) lib
++	$(HOST_MAKE_ENV) $(HOST_CONFIGURE_OPTS) $(MAKE) PREFIX=$(HOST_DIR) -C $(@D) lz4
+ endef
+ 
+ define HOST_LZ4_INSTALL_CMDS
+diff --git a/package/makedevs/makedevs.c b/package/makedevs/makedevs.c
+index be76155a..e7ec5298 100644
+--- a/package/makedevs/makedevs.c
++++ b/package/makedevs/makedevs.c
+@@ -257,8 +257,42 @@ char *bb_get_chomped_line_from_file(FILE *file)
+ 	return private_get_line_from_file(file, 1);
+ }
+ 
++#ifdef __APPLE__
++/* Read target IDs from the staged Linux files, never the host account database. */
++static long target_account_id(const char *path, const char *name)
++{
++    FILE *stream = bb_xfopen(path, "r");
++    char *line = NULL;
++    size_t capacity = 0;
++    long result = -1;
++    while (getline(&line, &capacity, stream) >= 0) {
++        char *rest = line;
++        char *account = strsep(&rest, ":");
++        char *password = strsep(&rest, ":");
++        char *number = strsep(&rest, ":");
++        char *end;
++        if (!account || !password || !number || strcmp(account, name))
++            continue;
++        errno = 0;
++        unsigned long id = strtoul(number, &end, 10);
++        if (errno || end == number || *end || id > 0xffffffffUL)
++            bb_error_msg_and_die("invalid target account ID for %s", name);
++        result = (long)id;
++        break;
++    }
++    free(line);
++    fclose(stream);
++    if (result < 0)
++        bb_error_msg_and_die("unknown target account name: %s", name);
++    return result;
++}
++#endif
++
+ long my_getpwnam(const char *name)
+ {
++#ifdef __APPLE__
++    return target_account_id(PASSWD_PATH, name);
++#else
+ 	struct passwd *myuser;
+ 	FILE *stream;
+ 
+@@ -276,10 +310,14 @@ long my_getpwnam(const char *name)
+ 	fclose(stream);
+ 
+ 	return myuser->pw_uid;
++#endif
+ }
+ 
+ long my_getgrnam(const char *name)
+ {
++#ifdef __APPLE__
++    return target_account_id(GROUP_PATH, name);
++#else
+ 	struct group *mygroup;
+ 	FILE *stream;
+ 
+@@ -297,6 +335,7 @@ long my_getgrnam(const char *name)
+ 	fclose(stream);
+ 
+ 	return mygroup->gr_gid;
++#endif
+ }
+ 
+ unsigned long get_ug_id(const char *s, long (*my_getxxnam)(const char *))
+diff --git a/package/mtd/mtd.mk b/package/mtd/mtd.mk
+index 2a625fcc..5ebac6be 100644
+--- a/package/mtd/mtd.mk
++++ b/package/mtd/mtd.mk
+@@ -98,6 +98,22 @@ HOST_MTD_CONF_OPTS = \
+ 	--without-crypto \
+ 	--without-tests
+ 
++
++ifeq ($(shell uname -s),Darwin)
++HOST_MTD_DEPENDENCIES := $(filter-out host-acl,$(HOST_MTD_DEPENDENCIES))
++HOST_MTD_CONF_OPTS += --without-xattr --without-jffs
++HOST_MTD_CONF_ENV += CFLAGS="$(HOST_CFLAGS) -I$(TOPDIR)/../openwrt/tools/mtd-utils/include -I$(TOPDIR)/../openwrt/tools/include -Dloff_t=off_t -D__BYTE_ORDER=BYTE_ORDER -include endian.h -DNO_NATIVE_SUPPORT -include fls.h"
++HOST_MTD_MAKE_OPTS = PROGRAMS="mkfs.ubifs"
++define HOST_MTD_DARWIN_PATCH
++	$(APPLY_PATCHES) $(@D) $(TOPDIR)/../openwrt/tools/mtd-utils/patches 110-portability.patch
++	$(APPLY_PATCHES) $(@D) $(TOPDIR)/../openwrt/tools/mtd-utils/patches 134-freebsd_loff_t.patch
++endef
++HOST_MTD_POST_PATCH_HOOKS += HOST_MTD_DARWIN_PATCH
++define HOST_MTD_INSTALL_CMDS
++	$(INSTALL) -D -m 755 $(@D)/mkfs.ubifs $(HOST_DIR)/sbin/mkfs.ubifs
++endef
++endif
++
+ MKFS_JFFS2 = $(HOST_DIR)/sbin/mkfs.jffs2
+ SUMTOOL = $(HOST_DIR)/sbin/sumtool
+ 
+diff --git a/package/squashfs/squashfs.mk b/package/squashfs/squashfs.mk
+index da22fad1..806411cc 100644
+--- a/package/squashfs/squashfs.mk
++++ b/package/squashfs/squashfs.mk
+@@ -83,7 +83,7 @@ endef
+ define HOST_SQUASHFS_BUILD_CMDS
+ 	$(HOST_MAKE_ENV) $(MAKE) \
+ 		CC="$(HOSTCC)" \
+-		EXTRA_CFLAGS="$(HOST_CFLAGS)" \
++		EXTRA_CFLAGS="$(HOST_CFLAGS) $(HOST_SQUASHFS_MACOS_CFLAGS)" \
+ 		EXTRA_LDFLAGS="$(HOST_LDFLAGS)" \
+ 		$(HOST_SQUASHFS_MAKE_ARGS) \
+ 		-C $(@D)/squashfs-tools/
+@@ -95,5 +95,9 @@ define HOST_SQUASHFS_INSTALL_CMDS
+ 		INSTALL_MANPAGES_DIR="" install
+ endef
+ 
++ifeq ($(shell uname -s),Darwin)
++HOST_SQUASHFS_MACOS_CFLAGS = -Dst_atim=st_atimespec -Dst_mtim=st_mtimespec -Dst_ctim=st_ctimespec
++endif
++
+ $(eval $(generic-package))
+ $(eval $(host-generic-package))
+diff --git a/package/util-linux/util-linux.mk b/package/util-linux/util-linux.mk
+index cfcd738b..068add3d 100644
+--- a/package/util-linux/util-linux.mk
++++ b/package/util-linux/util-linux.mk
+@@ -345,6 +345,12 @@ endif
+ 
+ UTIL_LINUX_POST_INSTALL_TARGET_HOOKS += UTIL_LINUX_GETTY_SYMLINK
+ 
++ifeq ($(shell uname -s),Darwin)
++HOST_UTIL_LINUX_CONF_OPTS += --disable-libblkid --disable-libmount
++# libuuid uses the supported Mach-O alias implementation with Apple Clang.
++HOST_UTIL_LINUX_CONF_ENV += CC="/usr/bin/clang" CPP="/usr/bin/clang -E"
++endif
++
+ $(eval $(autotools-package))
+ $(eval $(host-autotools-package))
+ 
+diff --git a/package/xz/xz.mk b/package/xz/xz.mk
+index 056c1680..5d7db2dc 100644
+--- a/package/xz/xz.mk
++++ b/package/xz/xz.mk
+@@ -77,5 +77,9 @@ HOST_XZ_CONF_ENV = \
+ # irrelevant for the host package.
+ HOST_XZ_AUTORECONF = NO
+ 
++ifeq ($(shell uname -s),Darwin)
++HOST_XZ_CONF_OPTS += --disable-symbol-versions
++endif
++
+ $(eval $(autotools-package))
+ $(eval $(host-autotools-package))
+diff --git a/toolchain/toolchain-wrapper.c b/toolchain/toolchain-wrapper.c
+index 5b306190..12042573 100644
+--- a/toolchain/toolchain-wrapper.c
++++ b/toolchain/toolchain-wrapper.c
+@@ -24,6 +24,10 @@
+ #include <errno.h>
+ #include <time.h>
+ #include <stdbool.h>
++#ifdef __APPLE__
++#define program_invocation_short_name getprogname()
++#include <mach-o/dyld.h>
++#endif
+ 
+ #ifdef BR_CCACHE
+ static char ccache_path[PATH_MAX];
+@@ -270,7 +274,18 @@ int main(int argc, char **argv)
+ 	} else {
+ 		basename = progpath;
+ 		absbasedir = malloc(PATH_MAX + 1);
++#ifdef __APPLE__
++        uint32_t executable_size = PATH_MAX;
++        ret = _NSGetExecutablePath(absbasedir, &executable_size);
++        if (ret == 0) {
++            char *resolved = realpath(absbasedir, NULL);
++            free(absbasedir);
++            absbasedir = resolved;
++            ret = resolved ? (int)strlen(resolved) : -1;
++        }
++#else
+ 		ret = readlink("/proc/self/exe", absbasedir, PATH_MAX);
++#endif
+ 		if (ret < 0) {
+ 			perror(__FILE__ ": readlink");
+ 			return 2;
+diff --git a/toolchain/toolchain-wrapper.mk b/toolchain/toolchain-wrapper.mk
+index cbf46f15..17b81387 100644
+--- a/toolchain/toolchain-wrapper.mk
++++ b/toolchain/toolchain-wrapper.mk
+@@ -83,9 +83,13 @@ else ifeq ($(BR2_RELRO_FULL),y)
+ TOOLCHAIN_WRAPPER_ARGS += -DBR2_RELRO_FULL
+ endif
+ 
++ifneq ($(shell uname -s),Darwin)
++TOOLCHAIN_WRAPPER_LDFLAGS = -s -Wl,--hash-style=$(TOOLCHAIN_WRAPPER_HASH_STYLE)
++endif
++
+ define TOOLCHAIN_WRAPPER_BUILD
+ 	$(HOSTCC) $(HOST_CFLAGS) $(TOOLCHAIN_WRAPPER_ARGS) \
+-		-s -Wl,--hash-style=$(TOOLCHAIN_WRAPPER_HASH_STYLE) \
++		$(TOOLCHAIN_WRAPPER_LDFLAGS) \
+ 		toolchain/toolchain-wrapper.c \
+ 		-o $(@D)/toolchain-wrapper
+ endef

@@ -38,7 +38,7 @@ def rolloff_320(x):
 def build_problem():
     if not shutil.which("make") or not shutil.which(os.environ.get("CXX", "c++")):
         return "no make or C++ compiler"
-    probe = subprocess.run([os.environ.get("CXX", "c++"), "-x", "c++", "-fsyntax-only", "-"],
+    probe = subprocess.run([os.environ.get("CXX", "c++"), "-x", "c++", "-fsyntax-only", *stream_shm.fftw_flags(), "-"],
                            input="#include <fftw3.h>\n", text=True, capture_output=True)
     return "FFTW3 headers missing" if probe.returncode else None
 
@@ -111,7 +111,9 @@ class StreamServiceTest(unittest.TestCase):
                 break
             except (OSError, AssertionError):
                 if time.monotonic() > deadline or self.proc.poll() is not None:
-                    raise AssertionError("w1700k-stream did not start: " + self.proc.stderr.read().decode())
+                    self.proc.terminate()
+                    _, error = self.proc.communicate(timeout=10)
+                    raise AssertionError("w1700k-stream did not start: " + error.decode())
                 time.sleep(0.05)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         time.sleep(0.2)
@@ -122,7 +124,7 @@ class StreamServiceTest(unittest.TestCase):
         self.proc.send_signal(signal.SIGINT)
         self.assertEqual(self.proc.wait(10), 0)
         self.proc.stderr.close()
-        self.assertFalse(os.path.exists("/dev/shm" + self.name), "the object is unlinked at exit")
+        self.assertFalse(stream_shm.exists(self.name), "the object is unlinked at exit")
 
     def send(self, seq, payload):
         self.sock.sendto(struct.pack("<IHHQ", MAGIC, 0, len(payload), seq) + payload, ("127.0.0.1", self.port))
